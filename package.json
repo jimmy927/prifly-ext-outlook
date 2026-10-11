@@ -1,8 +1,8 @@
 {
-  "name": "prifly-ext-template",
+  "name": "prifly-ext-outlook",
   "private": true,
   "type": "module",
-  "description": "A prifly extension: a minimal one to start a plugin from.",
+  "description": "A prifly extension: read, search and draft replies to Outlook mail through a connected Microsoft account. Never sends.",
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
@@ -10,7 +10,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.14",
-    "@prifly/extension-api": "link:@prifly/extension-api",
+    "@prifly/extension-api": "git+ssh://git@github.com/jimmy927/prifly-extension-api.git#v0.1.0",
     "@types/bun": "^1.1.14",
     "typescript": "^7.0.2"
   }

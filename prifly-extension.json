@@ -1,33 +1,31 @@
 {
-  "id": "template",
-  "name": "Template",
-  "description": "A minimal prifly extension to start a plugin from: one MCP tool, one launch board, one panel.",
+  "id": "outlook",
+  "name": "Outlook",
+  "description": "Search and read Outlook mail, and leave reply drafts in Drafts, from any session. Never sends.",
   "version": "0.1.0",
   "main": "index.ts",
+  "prompt": "prompt.md",
+  "icon": "mail",
   "connections": [
     {
       "provider": "microsoft",
-      "scopes": ["User.Read"],
-      "why": "Reads your name, to show which account the template's tool uses."
+      "scopes": ["Mail.Read"],
+      "why": "Reads your mail for the board and the outlook_* tools."
+    },
+    {
+      "provider": "microsoft",
+      "scopes": ["Mail.ReadWrite"],
+      "optional": true,
+      "why": "Saves reply drafts in Drafts; never sends."
     }
   ],
-  "launch": [
+  "settings": [
     {
-      "id": "things",
-      "label": "Template things",
-      "icon": "box",
-      "description": "Start a session from one of the template's things",
-      "searchPlaceholder": "Search things"
-    }
-  ],
-  "panels": [
-    {
-      "id": "things",
-      "label": "Template",
-      "icon": "box",
-      "description": "The template's things, in a window of its own",
-      "folder": "panel",
-      "page": "index.html"
+      "id": "account",
+      "label": "Microsoft account",
+      "description": "Which connected Microsoft account to read, by its address or connection id. Empty: the first one.",
+      "type": "string",
+      "default": ""
     }
   ]
 }

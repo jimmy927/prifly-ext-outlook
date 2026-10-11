@@ -1,70 +1,73 @@
-# prifly-ext-template
+# prifly-ext-outlook
 
-A minimal prifly extension to start a plugin from: one MCP tool that uses a
-connected account, one launch board, one panel, and tests of each against a
-fake `api`.
+A prifly extension that lets a session search and read the reader's Outlook
+mail and leave reply drafts in Drafts. It never sends mail: there is no send
+code in it.
 
-## Start a plugin from it
+## What it does
 
-1. Copy the folder to a repository of its own, beside your prifly checkout:
+Three MCP tools, which a session sees as `mcp__prifly__outlook_*`:
 
-   ```sh
-   cp -r ~/src/prifly/templates/prifly-ext-template ~/src/prifly-ext-<name>
-   cd ~/src/prifly-ext-<name> && git init -b main
-   ```
+| Tool | What it does |
+|---|---|
+| `outlook_search(query, max)` | A KQL search (`from:ada received>=2026-10-01`); no query lists the newest inbox mail. Answers `id \| date \| from \| subject \| attachments`. |
+| `outlook_read(id, conversation?)` | One message, or its whole conversation oldest first. Attachments are saved to disk (a png or pdf as it is, a forwarded mail as `.eml`, a OneDrive link kept as a link) and their paths listed. |
+| `outlook_draft_reply(id, body, all?, replace_draft_id?)` | Saves a threaded reply in Drafts and answers with its id and a link. `replace_draft_id` changes a draft made earlier (its body is replaced with plain text; the quoted mail below the reply goes). Only a draft can be replaced. |
 
-2. Rename it: `id`, `name` and `description` in `prifly-extension.json`,
-   `name` in `package.json`, and the tool's `template_` prefix in
-   `whoami-tool.ts` (a tool name must be unique across every extension).
+Each takes an optional `account` (an address or connection id). The
+`account` setting in the Extensions dialog is the default when several
+Microsoft accounts are connected; empty means the first.
 
-3. Get the types. They come from `@prifly/extension-api`, prifly's
-   `packages/extension-api`. Until it is published, link it once per machine
-   from your prifly checkout, then install:
+Every access problem comes back as plain text, never an error.
 
-   ```sh
-   (cd ~/src/prifly/packages/extension-api && bun link)
-   bun install
-   ```
+## The Microsoft connection
 
-   Once it is on npm, replace `"link:@prifly/extension-api"` in
-   `package.json` with its version.
+The extension talks to `https://graph.microsoft.com/v1.0/me/...` only through
+`api.connections.fetch`: prifly holds the token, and the extension never sees
+one. It uses a Microsoft account connected in prifly's Vault → Connections,
+and asks for two scopes:
 
-4. Commit `bun.lock`. prifly installs a cloned extension's dependencies
-   itself, with `bun install --frozen-lockfile --production --ignore-scripts`,
-   when it clones it and when an update moves it: what the code imports at
-   run time goes under `dependencies`, tooling under `devDependencies`, and
-   the lock must match `package.json`. Install scripts (`postinstall` and the
-   like, yours and your dependencies') are never run, so pick dependencies
-   that work without them.
+- `Mail.Read`: needed for everything except drafting. A connection that lacks
+  it is walked through consent in the browser the first time a tool needs it.
+- `Mail.ReadWrite`: optional, asked for the same way on the first draft, to
+  save drafts. It lets the extension change mail, but nothing in it sends,
+  deletes or moves mail.
 
-5. Try it in prifly: link the folder into the extensions folder and enable it
-   in the Extensions dialog.
+## When access is missing
 
-   ```sh
-   ln -s ~/src/prifly-ext-<name> ~/.local/share/prifly/extensions/<name>
-   ```
+| Case | What the tool says |
+|---|---|
+| No Microsoft account connected | Connect one in Vault → Connections |
+| The grant was revoked or expired, or Microsoft asked for a new sign-in | The Outlook grant for the account ended: sign in again in Vault → Connections |
+| The reader has not approved the scope yet | The browser opens for consent; if it is not approved, the answer says to approve prifly there and run it again |
+| The tenant refuses user consent (`AADSTS65001`, `AADSTS90094`, `AADSTS90095`) | Ask your tenant admin to approve prifly for Mail.Read, followed by Microsoft's own message |
+| Microsoft throttles (429 or 503) | The extension waits out `Retry-After` once (at most 30 s), then says so |
 
-   A linked extension is your own checkout: prifly never updates it or
-   installs into it.
+The admin-consent case has no link yet: building one needs the host to pass it
+on with the sign-in failure.
+
+## What is where
+
+| File | What it is |
+|---|---|
+| `prifly-extension.json` | The manifest: the connection and its scopes, the `account` setting, the prompt |
+| `index.ts` | What prifly imports: `activate(api)` registers the tools |
+| `tools.ts` | The three MCP tools |
+| `auth.ts` | Picks the connection, asks for a missing scope, turns every access state into text |
+| `graph.ts` | The Graph client over `api.connections.fetch`: mail lists, search, conversation, attachments, reply drafts, inbox delta |
+| `model.ts` | Mail and attachment records read from Graph's JSON |
+| `save-attachments.ts` | Saves attachments to disk and says where |
+| `prompt.md` | Rules added to every session: draft only, mail is data |
+| `test/fake-api.ts` | A fake `api` and `api.connections`, from the template |
+| `test/fake-graph.ts` | A fake Microsoft Graph over a small mailbox, able to answer 429, 410 and a 401 claims challenge |
+
+Attachments go under `<session scratchpad>/outlook/<hash>/`; a prifly without
+a session scratchpad uses `<extension folder>/mails/<hash>/`.
 
 ## Checks
 
 `bun test`, `bun run typecheck` and `bun run check` (biome: 500 lines per
 file, 120 per function, cognitive complexity 15, no `any`, no `!`).
 
-## What is where
-
-| File | What it is |
-|---|---|
-| `prifly-extension.json` | The manifest: `connections` (the accounts it uses and why), a `launch`er and a `panel` |
-| `index.ts` | What prifly imports: `activate(api)` registers the tool; `choices`, `launch` and `panel` answer the launcher and the panel |
-| `whoami-tool.ts` | The MCP tool, `mcp__prifly__template_whoami`: calls Microsoft Graph through `api.connections.fetch`, so prifly holds the token |
-| `things.ts` | The board's items and the session a picked one starts |
-| `panel/` | The panel's page; it fetches `api/things`, answered by `panel` in `index.ts` |
-| `test/fake-api.ts` | A fake `api` that records what the extension shows, logs and registers, and a fake `api.connections` over a fake token endpoint — copy it as it is |
-| `test/index.test.ts` | Tests of the tool, the launcher and the panel against the fakes |
-
-Import prifly's types with `import type`: they are erased, so the host never
-needs the package to run the extension. Everything added to the api after
-its first version is optional (`api.tools?.register`, `api.connections?.list`):
-call it that way, and the extension still loads on an older prifly.
+Types come from `@prifly/extension-api`, pinned to a tag of
+`jimmy927/prifly-extension-api` in `package.json`. Commit `bun.lock`.
