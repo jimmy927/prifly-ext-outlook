@@ -131,7 +131,10 @@ export async function send(
   if (init.body !== undefined) headers.set("Content-Type", "application/json");
   const options = { ...init, headers };
   let answer = await attempt(ctx, url, options);
-  if (answer instanceof Response && (answer.status === 429 || answer.status === 503)) {
+  // A 503 may have been processed already: only a 429, or a request that changes nothing, is repeated.
+  const repeatable = (status: number) =>
+    status === 429 || (status === 503 && (init.method ?? "GET") === "GET");
+  if (answer instanceof Response && repeatable(answer.status)) {
     const seconds = retryAfter(answer) ?? 5;
     await (ctx.wait ?? sleep)(Math.min(seconds * 1000, MAX_WAIT_MS));
     answer = await attempt(ctx, url, options);
@@ -168,11 +171,18 @@ async function mailList(
   path: string,
   params: Record<string, string | number>,
   order: (mails: Mail[]) => Mail[],
+  pages = 1,
 ): Promise<GraphResult<Mail[]>> {
-  const answer = await sendJson(ctx, `${path}?${query(params)}`);
-  if (!answer.ok) return answer;
-  const rows = answer.value["value"];
-  return good(order(Array.isArray(rows) ? rows.map(toMail) : []));
+  const mails: Mail[] = [];
+  let next = `${path}?${query(params)}`;
+  for (let page = 0; page < pages && next !== ""; page++) {
+    const answer = await sendJson(ctx, next);
+    if (!answer.ok) return answer;
+    const rows = answer.value["value"];
+    if (Array.isArray(rows)) mails.push(...rows.map(toMail));
+    next = text(answer.value["@odata.nextLink"]);
+  }
+  return good(order(mails));
 }
 
 const INBOX = "/me/mailFolders/inbox/messages";
@@ -249,6 +259,7 @@ export function conversation(
     "/me/messages",
     { $filter: `conversationId eq '${quoted}'`, $top: 100, $select: FULL_SELECT },
     oldestFirst,
+    20,
   );
 }
 

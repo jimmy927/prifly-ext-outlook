@@ -10,7 +10,7 @@
     {
       "provider": "microsoft",
       "scopes": ["Mail.Read"],
-      "why": "Reads your mail for the board and the outlook_* tools."
+      "why": "Reads your mail for the outlook_* tools."
     },
     {
       "provider": "microsoft",

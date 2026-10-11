@@ -297,3 +297,12 @@ test("no request ever goes to a send path", async () => {
     graph.calls.filter((call) => call.startsWith("POST")).map((call) => call.split("?")[0]),
   ).toEqual(["POST /me/messages/m1/createReply", "POST /me/messages/m3/createReplyAll"]);
 });
+
+test("a 503 on creating a draft is not repeated, so no second draft appears", async () => {
+  const { fake, graph } = setup([{ ...ACCOUNT, scopes: ["Mail.Read", "Mail.ReadWrite"] }]);
+  graph.fault = { kind: "throttle", status: 503, retryAfter: "1", times: 5 };
+  const answer = await fake.callTool("outlook_draft_reply", { id: "m1", body: "x" });
+  expect(answer).toContain("throttling requests (503)");
+  expect(waits).toEqual([]);
+  expect(graph.calls).toEqual(["POST /me/messages/m1/createReply"]);
+});

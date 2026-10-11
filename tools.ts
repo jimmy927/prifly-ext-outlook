@@ -234,7 +234,10 @@ export function outlookTools(
       inputSchema: {
         type: "object",
         properties: {
-          id: { type: "string", description: "The id of the message to answer." },
+          id: {
+            type: "string",
+            description: "The id of the message to answer; ignored when replace_draft_id is given.",
+          },
           body: { type: "string", description: "The reply's text, plain." },
           all: {
             type: "boolean",
@@ -247,7 +250,7 @@ export function outlookTools(
           },
           account: ACCOUNT_PROPERTY,
         },
-        required: ["id", "body"],
+        required: ["body"],
         additionalProperties: false,
       },
       call: withApi((api, args) => draftText(api, args, deps)),
