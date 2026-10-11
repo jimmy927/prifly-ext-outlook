@@ -30,13 +30,24 @@ export function boardActions(api: ExtensionApi): LaunchChoice[] {
   return names.length === 0 ? [] : [switchAction(names), CONNECT_ACTION];
 }
 
+/** The admin-consent row: the text, and the link the tenant's admin opens when there is one. */
+function adminRow(refused: { text: string; url?: string }): LaunchChoice {
+  const row = accessRow("admin", "Ask your tenant admin to approve prifly", refused.text);
+  if (refused.url !== undefined) row.url = refused.url;
+  return row;
+}
+
 function rowFor(hub: Hub, problem: Problem): LaunchChoice {
   const account = problem.connection?.account ?? "";
   switch (problem.kind) {
     case "no-connection":
       return accessRow("connect", "Connect a Microsoft account", NO_CONNECTION_TEXT);
-    case "needs-sign-in":
-      return accessRow("sign-in", `Sign in again as ${account}`, problem.text);
+    case "needs-sign-in": {
+      const refused = hub.refused.get(problem.connection?.id ?? "");
+      return refused === undefined
+        ? accessRow("sign-in", `Sign in again as ${account}`, problem.text)
+        : adminRow(refused);
+    }
     case "consent-needed": {
       const refused = hub.refused.get(problem.connection?.id ?? "");
       return refused === undefined
@@ -45,7 +56,7 @@ function rowFor(hub: Hub, problem: Problem): LaunchChoice {
             problem.text,
             "Opens your browser to approve Mail.Read. prifly reads mail and never sends it.",
           )
-        : accessRow("admin", "Ask your tenant admin to approve prifly", refused);
+        : adminRow(refused);
     }
     default:
       return accessRow("error", problem.text);
@@ -76,12 +87,13 @@ async function signInTo(hub: Hub, api: ExtensionApi, connection: string | null):
       connection === null ? {} : { connection },
     );
     if (!result.ok) {
-      if (connection === null || !isAdminConsentRefusal(result.message)) {
+      const url = result.adminConsentUrl;
+      if (connection === null || !(isAdminConsentRefusal(result.message) || url !== undefined)) {
         hub.refused.delete(connection ?? "");
         return said(`Not connected: ${result.message}`);
       }
-      const text = adminConsentText("Mail.Read", result.message);
-      hub.refused.set(connection, text);
+      const text = adminConsentText("Mail.Read", result.message, url);
+      hub.refused.set(connection, url === undefined ? { text } : { text, url });
       return said(text);
     }
     hub.refused.delete(result.connection);

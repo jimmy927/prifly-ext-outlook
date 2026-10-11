@@ -46,10 +46,25 @@ export function isAdminConsentRefusal(message: string): boolean {
   return ADMIN_CONSENT.test(message);
 }
 
-export function adminConsentText(scope: MailScope, providerMessage: string): string {
+/**
+ * What to tell the reader when the tenant needs an admin to approve prifly.
+ * `adminConsentUrl` is the link the admin opens, when the host passed one.
+ */
+export function adminConsentText(
+  scope: MailScope,
+  providerMessage: string,
+  adminConsentUrl?: string,
+): string {
+  if (adminConsentUrl === undefined) {
+    return (
+      `Ask your tenant admin to approve prifly for ${scope}: your organisation's Microsoft 365 ` +
+      `admin has to grant it before prifly can read this mailbox. Microsoft said: ${providerMessage}`
+    );
+  }
   return (
-    `Ask your tenant admin to approve prifly for ${scope}: your organisation's Microsoft 365 ` +
-    `admin has to grant it before prifly can read this mailbox. Microsoft said: ${providerMessage}`
+    `Ask your tenant admin to approve prifly: ${adminConsentUrl} Your organisation's Microsoft ` +
+    `365 admin has to grant ${scope} before prifly can read this mailbox. ` +
+    `Microsoft said: ${providerMessage}`
   );
 }
 
@@ -87,6 +102,9 @@ export function pickConnection(
 export function failureText(failure: GraphFailure, account: string): string {
   switch (failure.kind) {
     case "needs-sign-in":
+      return failure.adminConsentUrl === undefined
+        ? needsSignInText(account)
+        : `${needsSignInText(account)} Ask your tenant admin to approve prifly: ${failure.adminConsentUrl}`;
     case "unauthorized":
       return needsSignInText(account);
     case "forbidden":
@@ -123,12 +141,14 @@ async function consent(
     return { kind: "scope-missing", connection, text: `${scope} was not requested: ${reason}` };
   }
   if (!result.ok) {
-    const text = isAdminConsentRefusal(result.message)
-      ? adminConsentText(scope, result.message)
+    const adminConsent =
+      isAdminConsentRefusal(result.message) || result.adminConsentUrl !== undefined;
+    const text = adminConsent
+      ? adminConsentText(scope, result.message, result.adminConsentUrl)
       : `${scope} was not granted for ${connection.account}: ${result.message} ` +
         "Approve prifly in the browser window it opens, then run this again.";
     return {
-      kind: isAdminConsentRefusal(result.message) ? "admin-consent" : "scope-missing",
+      kind: adminConsent ? "admin-consent" : "scope-missing",
       connection,
       text,
     };

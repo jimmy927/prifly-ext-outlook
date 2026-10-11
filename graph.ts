@@ -50,7 +50,12 @@ export type GraphContext = {
 };
 
 export type GraphFailure =
-  | { kind: "needs-sign-in"; account: string }
+  | {
+      kind: "needs-sign-in";
+      account: string;
+      /** The tenant's admin can approve prifly here; set only when the host passed a link. */
+      adminConsentUrl?: string;
+    }
   /** A 401 that got past the host: a claims challenge or a token Graph refused. */
   | { kind: "unauthorized" }
   | { kind: "forbidden"; message: string }
@@ -89,7 +94,12 @@ async function attempt(
     // A fresh Request each time: a body can be sent only once, and a retry sends it again.
     const answer = await ctx.connections.fetch(ctx.connection, new Request(url, init));
     if ("needsSignIn" in answer) {
-      return { kind: "needs-sign-in", account: answer.needsSignIn.account };
+      const { account, adminConsentUrl } = answer.needsSignIn;
+      return {
+        kind: "needs-sign-in",
+        account,
+        ...(adminConsentUrl === undefined ? {} : { adminConsentUrl }),
+      };
     }
     return answer;
   } catch (error) {

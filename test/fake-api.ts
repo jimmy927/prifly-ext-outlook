@@ -212,6 +212,7 @@ export function fakeApi(
     start: async () => ({ started: false, reason: "A fake api starts no session." }),
     snooze: () => undefined,
     dialog: async () => null,
+    openUrl: async () => false,
   };
   const callTool: FakeApi["callTool"] = (name, args, pick = null) => {
     const tool = tools.find((each) => each.name === name);
@@ -221,7 +222,8 @@ export function fakeApi(
       pick: async () => pick,
       signal: new AbortController().signal,
     };
-    return tool.call(args, ctx);
+    // No scratchpad, as an older prifly gives none: a test that wants one calls the tool itself.
+    return tool.call(args, ctx as never);
   };
   return { api, tools: () => tools, callTool, ...fake };
 }

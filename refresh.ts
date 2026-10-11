@@ -100,5 +100,8 @@ export async function refreshLists(
   }
   cache.failure = failures[0] ?? null;
   cache.triedAt = now(hub).getTime();
-  if (failures.length === 0) hub.ended.delete(on.connection.id);
+  if (failures.length === 0) {
+    hub.ended.delete(on.connection.id);
+    hub.refused.delete(on.connection.id);
+  }
 }

@@ -85,7 +85,7 @@ The board is then one row, never an error:
 | No Microsoft account connected | "Connect a Microsoft account" (picking it signs one in) |
 | The connection has no `Mail.Read` yet | "Let prifly read your Outlook mail (account)" (picking it asks in the browser, then lists again) |
 | The grant ended, or Microsoft asked for a new sign-in | "Sign in again as account", and the launcher turns warning-toned |
-| The tenant refuses user consent | "Ask your tenant admin to approve prifly", with Microsoft's message (no link yet) |
+| The tenant refuses user consent | "Ask your tenant admin to approve prifly", with Microsoft's message; the row opens the admin-consent link when prifly passes one |
 | Graph failed (throttling, 5xx) | The failure's text |
 
 ## The tools
@@ -124,8 +124,12 @@ and asks for two scopes:
   deletes or moves mail.
 
 A 429 is waited out once (`Retry-After`, at most 30 s); a 503 once for a read.
-The admin-consent case has no link yet: building one needs the host to pass it
-on with the sign-in failure.
+When the tenant refuses user consent (AADSTS65001, 90094 or 90095), prifly passes
+an admin-consent link (`https://login.microsoftonline.com/{tenant}/adminconsent?client_id=...`)
+with the sign-in refusal or the `needsSignIn` answer. The tool's answer then reads
+"Ask your tenant admin to approve prifly: <link>" followed by Microsoft's message,
+and the board's admin row shows the same text and opens the link. A prifly that
+passes no link (older than `@prifly/extension-api` 0.3.0) gets the text without it.
 
 ## What is where
 

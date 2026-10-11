@@ -172,6 +172,39 @@ test("a tenant that refuses consent: the admin row, no link, and the provider's 
   expect(JSON.stringify(board)).not.toContain("http");
 });
 
+test("a tenant that refuses consent and sends a link: the admin row carries it as its url", async () => {
+  const url = "https://login.microsoftonline.com/contoso/adminconsent?client_id=abc";
+  const ext = await boot({
+    accounts: [{ ...ACCOUNT, scopes: ["User.Read"] }],
+    signIn: async () => ({ ...NOT_APPROVED, adminConsentUrl: url }),
+  });
+  const launch = await ext.extension.launch("mail", "row:grant", "", { again: false });
+  expect(launch.message).toContain(`Ask your tenant admin to approve prifly: ${url}`);
+  const board = await ext.board();
+  expect(board.items).toHaveLength(1);
+  expect(board.items[0]?.key).toBe("row:admin");
+  expect(board.items[0]?.url).toBe(url);
+  expect(board.items[0]?.detail).toContain(`Ask your tenant admin to approve prifly: ${url}`);
+  expect(board.items[0]?.detail).toContain("AADSTS65001");
+});
+
+test("a needsSignIn answer with a link, seen by the poller: the admin row carries it", async () => {
+  const url = "https://login.microsoftonline.com/contoso/adminconsent?client_id=abc";
+  const ext = await boot();
+  ext.connections.connections.fetch = async () => ({
+    needsSignIn: {
+      connection: ACCOUNT.id,
+      provider: "microsoft",
+      account: ACCOUNT.account,
+      adminConsentUrl: url,
+    },
+  });
+  await ext.poll();
+  const board = await ext.board();
+  expect(board.items[0]?.key).toBe("row:admin");
+  expect(board.items[0]?.url).toBe(url);
+});
+
 test("no connection: Connect a Microsoft account, and picking it connects one", async () => {
   const ext = await boot({ accounts: [] });
   const board = await ext.board();

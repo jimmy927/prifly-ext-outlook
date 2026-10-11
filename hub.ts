@@ -6,7 +6,7 @@
  */
 
 import type { ExtensionApi, ExtensionConnection, SettingValue } from "@prifly/extension-api";
-import { type Access, needsSignInText, type Problem, peekAccess } from "./auth";
+import { type Access, failureText, needsSignInText, type Problem, peekAccess } from "./auth";
 import { DEFAULT_COLUMNS } from "./columns";
 import type { GraphFailure, Wait } from "./graph";
 import type { Mail } from "./model";
@@ -51,8 +51,11 @@ export type Hub = {
   caches: Map<string, ConnCache>;
   /** Connections whose grant ended, learnt from a failed call while the host still lists them as fine. */
   ended: Set<string>;
-  /** What a refused consent said, by connection, until the scope is held. */
-  refused: Map<string, string>;
+  /**
+   * What a refused consent said, by connection, until the scope is held:
+   * its text, and the link the tenant's admin opens when the host passed one.
+   */
+  refused: Map<string, { text: string; url?: string }>;
   /** The newest message of a conversation when its launch was built, until `launched`. */
   launching: Map<string, string>;
   /** Search results the filter found, by connection and query. */
@@ -159,6 +162,12 @@ export function noteFailure(
 ): void {
   if (failure.kind === "needs-sign-in" || failure.kind === "unauthorized") {
     hub.ended.add(connection.id);
+  }
+  if (failure.kind === "needs-sign-in" && failure.adminConsentUrl !== undefined) {
+    hub.refused.set(connection.id, {
+      text: failureText(failure, connection.account),
+      url: failure.adminConsentUrl,
+    });
   }
 }
 

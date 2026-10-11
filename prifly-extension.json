@@ -2,7 +2,7 @@
   "id": "outlook",
   "name": "Outlook",
   "description": "Start sessions from Outlook mail, and search, read and draft replies from any session. Never sends.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "main": "index.ts",
   "prompt": "prompt.md",
   "icon": "mail",

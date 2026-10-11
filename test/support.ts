@@ -60,7 +60,10 @@ export type BootOptions = {
   /** Runs on the fake Graph before the extension is activated, to set the mailbox up. */
   prepare?: (graph: ReturnType<typeof fakeGraph>) => void;
   /** Replaces `api.connections.signIn`. */
-  signIn?: (provider: string, scopes: string[]) => Promise<{ ok: false; message: string }>;
+  signIn?: (
+    provider: string,
+    scopes: string[],
+  ) => Promise<{ ok: false; message: string; adminConsentUrl?: string }>;
 };
 
 /** The extension, activated on a fake api; a poll round runs when the test asks (`poll()`). */

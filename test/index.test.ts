@@ -205,6 +205,36 @@ test("a consent refusal names the tenant admin and carries Microsoft's message",
   }
 });
 
+const ADMIN_URL = "https://login.microsoftonline.com/contoso/adminconsent?client_id=abc";
+
+test("a consent refusal with an admin consent link puts the link in the answer", async () => {
+  const { fake, connections } = setup([{ ...ACCOUNT, scopes: ["User.Read"] }]);
+  const message = "AADSTS90094: Admin consent is required for this application.";
+  connections.connections.signIn = async () => ({
+    ok: false,
+    message,
+    adminConsentUrl: ADMIN_URL,
+  });
+  const answer = await fake.callTool("outlook_search", { query: "x" });
+  expect(answer).toContain(`Ask your tenant admin to approve prifly: ${ADMIN_URL}`);
+  expect(answer).toContain(`Microsoft said: ${message}`);
+});
+
+test("a needsSignIn answer with an admin consent link puts the link in the answer", async () => {
+  const { fake, connections } = setup();
+  connections.connections.fetch = async () => ({
+    needsSignIn: {
+      connection: ACCOUNT.id,
+      provider: "microsoft",
+      account: ACCOUNT.account,
+      adminConsentUrl: ADMIN_URL,
+    },
+  });
+  const answer = await fake.callTool("outlook_search", {});
+  expect(answer).toContain("The Outlook grant for ada@example.com ended");
+  expect(answer).toContain(`Ask your tenant admin to approve prifly: ${ADMIN_URL}`);
+});
+
 test("no connection, an unknown account and a missing host api are all plain text", async () => {
   const none = setup([]);
   expect(await none.fake.callTool("outlook_search", {})).toContain("Connect");
