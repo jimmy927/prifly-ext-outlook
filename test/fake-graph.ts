@@ -11,13 +11,13 @@ import type { FakeProvider } from "./fake-api";
 
 type Entry = Record<string, unknown>;
 
-const BOB = { name: "Bob Builder", address: "bob@example.com" };
-const ADA = { name: "Ada Lovelace", address: "ada@example.com" };
-const DANA = { name: "Dana Scully", address: "dana@example.com" };
+export const BOB = { name: "Bob Builder", address: "bob@example.com" };
+export const ADA = { name: "Ada Lovelace", address: "ada@example.com" };
+export const DANA = { name: "Dana Scully", address: "dana@example.com" };
 
-const who = (person: { name: string; address: string }) => ({ emailAddress: person });
+export const who = (person: { name: string; address: string }) => ({ emailAddress: person });
 
-function mail(fields: Entry): Entry {
+export function mail(fields: Entry): Entry {
   const id = String(fields["id"]);
   return {
     isRead: true,
@@ -31,7 +31,7 @@ function mail(fields: Entry): Entry {
   };
 }
 
-const body = (content: string) => ({ contentType: "text", content });
+export const body = (content: string) => ({ contentType: "text", content });
 
 /** Two conversations: A (Bob and Ada, a png and a pdf) and B (Dana, flagged, a forwarded mail and a link). */
 export function mailbox(): Entry[] {
@@ -306,9 +306,12 @@ export function fakeGraph(): FakeGraph {
       return error(410, "syncStateNotFound", "The sync state was not found");
     }
     const base = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta";
-    if (url.searchParams.has("$deltatoken")) {
+    const token = url.searchParams.get("$deltatoken");
+    if (token !== null) {
+      // "T<n>": the mailbox had n messages then; whatever was pushed since is the change.
+      const seen = Number(token.replace(/^T/, ""));
       return Response.json({
-        value: [],
+        value: graph.messages.slice(seen),
         "@odata.deltaLink": `${base}?$deltatoken=T${graph.messages.length}`,
       });
     }

@@ -61,13 +61,14 @@ function skipReason(attachment: Attachment): string | null {
   return null;
 }
 
-async function writeOut(dir: string, path: string, bytes: Uint8Array): Promise<string> {
+/** Writes the file; null when it landed, else why not. */
+async function writeOut(dir: string, path: string, bytes: Uint8Array): Promise<string | null> {
   try {
     await mkdir(dir, { recursive: true });
     await writeFile(path, bytes);
-    return `saved to ${path}`;
+    return null;
   } catch (error) {
-    return `not saved, ${error instanceof Error ? error.message : String(error)}`;
+    return error instanceof Error ? error.message : String(error);
   }
 }
 
@@ -83,11 +84,28 @@ export async function saveAttachments(
   mail: Mail,
   counter: { next: number },
 ): Promise<string[]> {
-  if (!mail.hasAttachments) return [];
-  const listed = await attachments(graph, mail.id);
-  if (!listed.ok)
-    return [`- attachments could not be listed: ${failureText(listed.failure, account)}`];
+  return (await saveAttachmentFiles(graph, account, dir, mail, counter)).lines;
+}
+
+/** A file that was written to disk. */
+export type SavedFile = { path: string; name: string; contentType: string; size: number };
+
+/** `saveAttachments`, also saying which files landed on disk (the board's launch reads the pictures). */
+export async function saveAttachmentFiles(
+  graph: GraphContext,
+  account: string,
+  dir: string,
+  mail: Mail,
+  counter: { next: number },
+): Promise<{ lines: string[]; saved: SavedFile[] }> {
   const lines: string[] = [];
+  const saved: SavedFile[] = [];
+  if (!mail.hasAttachments) return { lines, saved };
+  const listed = await attachments(graph, mail.id);
+  if (!listed.ok) {
+    lines.push(`- attachments could not be listed: ${failureText(listed.failure, account)}`);
+    return { lines, saved };
+  }
   for (const attachment of listed.value) {
     const label = `${attachment.name} (${attachment.contentType || attachment.kind}, ${kb(attachment.size)})`;
     const skipped = skipReason(attachment);
@@ -103,7 +121,11 @@ export async function saveAttachments(
     const base = safeName(attachment.name);
     const named = attachment.kind === "item" && !base.endsWith(".eml") ? `${base}.eml` : base;
     const path = join(dir, `${counter.next++}-${named}`);
-    lines.push(`- ${label}: ${await writeOut(dir, path, bytes.value)}`);
+    const failed = await writeOut(dir, path, bytes.value);
+    lines.push(`- ${label}: ${failed === null ? `saved to ${path}` : `not saved, ${failed}`}`);
+    if (failed === null) {
+      saved.push({ path, name: named, contentType: attachment.contentType, size: attachment.size });
+    }
   }
-  return lines;
+  return { lines, saved };
 }

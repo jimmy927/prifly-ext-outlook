@@ -32,6 +32,8 @@ const BASE = "https://graph.microsoft.com/v1.0";
 /** The longest a `Retry-After` is waited out. */
 export const MAX_WAIT_MS = 30_000;
 
+const BODY_PREFER = 'outlook.body-content-type="text"';
+
 const LIST_SELECT =
   "id,conversationId,subject,from,toRecipients,receivedDateTime,isRead,isDraft,hasAttachments," +
   "bodyPreview,webLink,flag,categories";
@@ -127,7 +129,9 @@ export async function send(
 ): Promise<GraphResult<Response>> {
   const url = pathOrUrl.startsWith("https://") ? pathOrUrl : `${BASE}${pathOrUrl}`;
   const headers = new Headers(init.headers);
-  headers.set("Prefer", 'outlook.body-content-type="text"');
+  // A caller's own preference (the delta's page size) rides along with the body type.
+  const own = headers.get("Prefer");
+  headers.set("Prefer", own === null ? BODY_PREFER : `${BODY_PREFER}, ${own}`);
   if (init.body !== undefined) headers.set("Content-Type", "application/json");
   const options = { ...init, headers };
   let answer = await attempt(ctx, url, options);
@@ -352,25 +356,37 @@ export type InboxDelta = {
 
 const MAX_DELTA_PAGES = 50;
 
+/** A delta page's rows: a mail that changed, or the id of one that was removed. */
+function sortDeltaRows(rows: unknown, changed: Mail[], removed: string[]): void {
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if ("@removed" in record(row)) removed.push(text(record(row)["id"]));
+    else changed.push(toMail(row));
+  }
+}
+
 /**
  * The inbox's changes since `link` (the `deltaLink` of the last run), or all of
- * it when `link` is left out. A `gone` failure means the link expired: start again without one.
+ * it when `link` is left out, or only mail received since `since` (an ISO
+ * time) so a first run does not walk the whole inbox. A `gone` failure means
+ * the link expired: start again without one.
  */
 export async function inboxDelta(
   ctx: GraphContext,
   link?: string,
+  since?: string,
 ): Promise<GraphResult<InboxDelta>> {
-  let next = link ?? `${INBOX}/delta?${query({ $select: LIST_SELECT })}`;
+  const first = {
+    ...(since === undefined ? {} : { $filter: `receivedDateTime ge ${since}` }),
+    $select: LIST_SELECT,
+  };
+  let next = link ?? `${INBOX}/delta?${query(first)}`;
   const changed: Mail[] = [];
   const removed: string[] = [];
+  const headers = { Prefer: "odata.maxpagesize=100" };
   for (let page = 0; page < MAX_DELTA_PAGES; page++) {
-    const answer = await sendJson(ctx, next);
+    const answer = await sendJson(ctx, next, { headers });
     if (!answer.ok) return answer;
-    const rows = answer.value["value"];
-    for (const row of Array.isArray(rows) ? rows : []) {
-      if ("@removed" in record(row)) removed.push(text(record(row)["id"]));
-      else changed.push(toMail(row));
-    }
+    sortDeltaRows(answer.value["value"], changed, removed);
     const deltaLink = text(answer.value["@odata.deltaLink"]);
     if (deltaLink !== "") return good({ changed, removed, deltaLink });
     next = text(answer.value["@odata.nextLink"]);

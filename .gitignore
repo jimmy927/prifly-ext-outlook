@@ -1,2 +1,4 @@
 node_modules/
 mails/
+state.json
+state.json.tmp

@@ -17,6 +17,8 @@ export type ProblemKind =
   /** The `account` setting or argument matches no connection. */
   | "unknown-account"
   | "needs-sign-in"
+  /** The connection lacks the scope and nobody has asked the reader for it yet (`peekAccess`). */
+  | "consent-needed"
   /** The reader did not approve the scope in the browser (or it did not take). */
   | "scope-missing"
   /** The tenant refuses user consent: its admin has to approve prifly. */
@@ -142,16 +144,35 @@ async function consent(
   };
 }
 
+function contextFor(
+  connections: ExtensionConnectionsApi,
+  connection: ExtensionConnection,
+  wait: Wait | undefined,
+): Access {
+  const ctx: GraphContext = {
+    connections,
+    connection: connection.id,
+    ...(wait === undefined ? {} : { wait }),
+  };
+  return { ok: true, ctx, connection };
+}
+
+/** What the board row and the sentence say when `scope` has not been approved yet. */
+export function consentNeededText(scope: MailScope, account: string): string {
+  return scope === "Mail.Read"
+    ? `Let prifly read your Outlook mail (${account})`
+    : `Let prifly save reply drafts for ${account}`;
+}
+
 /**
- * A ready Graph context for the connection `account` names (empty: the
- * first), asking the reader for `scope` first when the connection lacks it.
- * That is the incremental consent: `signIn` with the connection's id, which
- * opens the browser and resolves when they finish.
+ * Like `resolveAccess`, but never opens the browser: a connection that lacks
+ * `scope` is a `consent-needed` problem. For what runs without the reader
+ * asking: the poller and the board's listing.
  */
-export async function resolveAccess(
+export function peekAccess(
   connections: ExtensionConnectionsApi | undefined,
   options: { account: string; scope: MailScope; wait?: Wait },
-): Promise<Access> {
+): Access {
   if (connections === undefined) {
     return problem(
       "no-host-support",
@@ -159,9 +180,10 @@ export async function resolveAccess(
       null,
     );
   }
-  const first = pickConnection(connections, "");
-  if (first === null) return problem("no-connection", NO_CONNECTION_TEXT, null);
-  let connection = pickConnection(connections, options.account);
+  if (pickConnection(connections, "") === null) {
+    return problem("no-connection", NO_CONNECTION_TEXT, null);
+  }
+  const connection = pickConnection(connections, options.account);
   if (connection === null) {
     const names = connections.list("microsoft").map((each) => each.account);
     return problem(
@@ -174,14 +196,30 @@ export async function resolveAccess(
     return problem("needs-sign-in", needsSignInText(connection.account), connection);
   }
   if (!hasScope(connection, options.scope)) {
-    const refused = await consent(connections, connection, options.scope);
-    if (refused !== null) return { ok: false, problem: refused };
-    connection = pickConnection(connections, connection.id) ?? connection;
+    return problem(
+      "consent-needed",
+      consentNeededText(options.scope, connection.account),
+      connection,
+    );
   }
-  const ctx: GraphContext = {
-    connections,
-    connection: connection.id,
-    ...(options.wait === undefined ? {} : { wait: options.wait }),
-  };
-  return { ok: true, ctx, connection };
+  return contextFor(connections, connection, options.wait);
+}
+
+/**
+ * A ready Graph context for the connection `account` names (empty: the
+ * first), asking the reader for `scope` first when the connection lacks it.
+ * That is the incremental consent: `signIn` with the connection's id, which
+ * opens the browser and resolves when they finish.
+ */
+export async function resolveAccess(
+  connections: ExtensionConnectionsApi | undefined,
+  options: { account: string; scope: MailScope; wait?: Wait },
+): Promise<Access> {
+  const peeked = peekAccess(connections, options);
+  const missing = peeked.ok ? null : peeked.problem.connection;
+  if (connections === undefined || missing === null) return peeked;
+  if (peeked.ok || peeked.problem.kind !== "consent-needed") return peeked;
+  const refused = await consent(connections, missing, options.scope);
+  if (refused !== null) return { ok: false, problem: refused };
+  return contextFor(connections, pickConnection(connections, missing.id) ?? missing, options.wait);
 }

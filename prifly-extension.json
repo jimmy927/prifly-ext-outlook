@@ -1,8 +1,8 @@
 {
   "id": "outlook",
   "name": "Outlook",
-  "description": "Search and read Outlook mail, and leave reply drafts in Drafts, from any session. Never sends.",
-  "version": "0.1.0",
+  "description": "Start sessions from Outlook mail, and search, read and draft replies from any session. Never sends.",
+  "version": "0.2.0",
   "main": "index.ts",
   "prompt": "prompt.md",
   "icon": "mail",
@@ -10,7 +10,7 @@
     {
       "provider": "microsoft",
       "scopes": ["Mail.Read"],
-      "why": "Reads your mail for the outlook_* tools."
+      "why": "Reads your mail for the From an Outlook mail board and the outlook_* tools."
     },
     {
       "provider": "microsoft",
@@ -19,13 +19,38 @@
       "why": "Saves reply drafts in Drafts; never sends."
     }
   ],
+  "launch": [
+    {
+      "id": "mail",
+      "label": "From an Outlook mail…",
+      "icon": "mail",
+      "description": "Unread, Inbox and Flagged mail as a board, one card per conversation. Starts a session with the whole conversation and its attachments.",
+      "searchPlaceholder": "Search mail (KQL): from:ada subject:invoice received>=2026-10-01 hasattachments:true"
+    }
+  ],
   "settings": [
+    {
+      "id": "pollMinutes",
+      "label": "Check mail every (minutes)",
+      "description": "How often the board, the unread count and replies in started conversations are refreshed.",
+      "type": "number",
+      "default": 3,
+      "min": 1,
+      "max": 60
+    },
     {
       "id": "account",
       "label": "Microsoft account",
-      "description": "Which connected Microsoft account to read, by its address or connection id. Empty: the first one.",
+      "description": "Which connected Microsoft account to read, by its address or connection id. Empty: the first one. \"Switch account…\" on the board overrides it.",
       "type": "string",
       "default": ""
+    },
+    {
+      "id": "columns",
+      "label": "Board columns",
+      "description": "Columns separated by |, each Name = unread, inbox, flagged or a KQL search, e.g. Unread = unread | Invoices = subject:invoice hasattachments:true.",
+      "type": "string",
+      "default": "Unread = unread | Inbox = inbox | Flagged = flagged"
     }
   ]
 }
