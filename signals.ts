@@ -52,7 +52,7 @@ export function noteReplies(hub: Hub, connection: string, changed: Mail[], self:
 function chip(key: string, reply: Reply, at: Date): Decoration {
   return {
     key,
-    icon: "dot",
+    icon: "outlook",
     label: `New reply from ${reply.from}`,
     tone: "info",
     details: [reply.subject, `Received ${timeLabel(reply.at, at)}`],

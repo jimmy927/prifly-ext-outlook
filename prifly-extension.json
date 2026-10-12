@@ -5,7 +5,7 @@
   "version": "0.2.1",
   "main": "index.ts",
   "prompt": "prompt.md",
-  "icon": "mail",
+  "icon": "outlook",
   "connections": [
     {
       "provider": "microsoft",
@@ -23,7 +23,7 @@
     {
       "id": "mail",
       "label": "From an Outlook mail…",
-      "icon": "mail",
+      "icon": "outlook",
       "description": "Unread, Inbox and Flagged mail as a board, one card per conversation. Starts a session with the whole conversation and its attachments.",
       "searchPlaceholder": "Search mail (KQL): from:ada subject:invoice received>=2026-10-01 hasattachments:true"
     }
