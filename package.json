@@ -1,6 +1,7 @@
 {
   "name": "prifly-ext-outlook",
   "private": true,
+  "license": "FSL-1.1-ALv2",
   "type": "module",
   "description": "A prifly extension: read, search and draft replies to Outlook mail through a connected Microsoft account. Never sends.",
   "scripts": {
