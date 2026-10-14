@@ -1,14 +1,17 @@
 /**
  * Which Microsoft connection to use, and what to say when access is missing.
  * Every way access can fail becomes a `Problem` with plain text (the tools
- * return it as their answer; the board will show it as a row) — nothing here
- * throws.
+ * return it as their answer, the status line shows it) — nothing here throws.
  */
 
 import type { ExtensionConnection, ExtensionConnectionsApi } from "@prifly/extension-api";
 import type { GraphContext, GraphFailure, Wait } from "./graph";
 
-export type MailScope = "Mail.Read" | "Mail.ReadWrite";
+/**
+ * The scopes a call can need. The manifest asks for all but `Mail.Read`,
+ * which `Mail.ReadWrite` covers: a connection made earlier may hold it alone.
+ */
+export type Scope = "Mail.Read" | "Mail.ReadWrite" | "Mail.Send" | "Calendars.ReadWrite";
 
 export type ProblemKind =
   /** This prifly has no `api.connections`. */
@@ -17,7 +20,7 @@ export type ProblemKind =
   /** The `account` setting or argument matches no connection. */
   | "unknown-account"
   | "needs-sign-in"
-  /** The connection lacks the scope and nobody has asked the reader for it yet (`peekAccess`). */
+  /** The connection lacks a scope and nobody has asked the reader for it yet (`peekAccess`). */
   | "consent-needed"
   /** The reader did not approve the scope in the browser (or it did not take). */
   | "scope-missing"
@@ -51,19 +54,19 @@ export function isAdminConsentRefusal(message: string): boolean {
  * `adminConsentUrl` is the link the admin opens, when the host passed one.
  */
 export function adminConsentText(
-  scope: MailScope,
+  scopes: string,
   providerMessage: string,
   adminConsentUrl?: string,
 ): string {
   if (adminConsentUrl === undefined) {
     return (
-      `Ask your tenant admin to approve prifly for ${scope}: your organisation's Microsoft 365 ` +
-      `admin has to grant it before prifly can read this mailbox. Microsoft said: ${providerMessage}`
+      `Ask your tenant admin to approve prifly for ${scopes}: your organisation's Microsoft 365 ` +
+      `admin has to grant it before prifly can use this mailbox. Microsoft said: ${providerMessage}`
     );
   }
   return (
     `Ask your tenant admin to approve prifly: ${adminConsentUrl} Your organisation's Microsoft ` +
-    `365 admin has to grant ${scope} before prifly can read this mailbox. ` +
+    `365 admin has to grant ${scopes} before prifly can use this mailbox. ` +
     `Microsoft said: ${providerMessage}`
   );
 }
@@ -78,10 +81,22 @@ function bare(scope: string): string {
 }
 
 /** Whether the connection holds `scope`; `Mail.ReadWrite` covers `Mail.Read`. */
-export function hasScope(connection: ExtensionConnection, scope: MailScope): boolean {
+export function hasScope(connection: ExtensionConnection, scope: Scope): boolean {
   const held = connection.scopes.map(bare);
-  const wanted = scope.toLowerCase();
-  return held.includes(wanted) || (scope === "Mail.Read" && held.includes("mail.readwrite"));
+  return (
+    held.includes(scope.toLowerCase()) || (scope === "Mail.Read" && held.includes("mail.readwrite"))
+  );
+}
+
+/**
+ * The scopes of `wanted` the connection lacks, as the manifest names them:
+ * a missing `Mail.Read` is asked for as `Mail.ReadWrite`.
+ */
+export function missingScopes(connection: ExtensionConnection, wanted: readonly Scope[]): Scope[] {
+  const missing = wanted
+    .filter((scope) => !hasScope(connection, scope))
+    .map((scope): Scope => (scope === "Mail.Read" ? "Mail.ReadWrite" : scope));
+  return [...new Set(missing)];
 }
 
 /** The connection `account` names (its id or address), else the first Microsoft one. */
@@ -108,9 +123,9 @@ export function failureText(failure: GraphFailure, account: string): string {
     case "unauthorized":
       return needsSignInText(account);
     case "forbidden":
-      return `Microsoft refused access to ${account}'s mail (403): ${failure.message}`;
+      return `Microsoft refused access to ${account}'s mailbox (403): ${failure.message}`;
     case "gone":
-      return "That item is gone or its sync state expired (410).";
+      return "That item is gone (410).";
     case "throttled": {
       const wait =
         failure.retryAfterSeconds === null ? "a minute" : `${failure.retryAfterSeconds} s`;
@@ -127,25 +142,26 @@ function problem(kind: ProblemKind, text: string, connection: ExtensionConnectio
   return { ok: false, problem: { kind, text, connection } };
 }
 
-/** Asks the reader, in their browser, for `scope` on the connection; null when it is held after. */
+/** Asks the reader, in their browser, for `scopes` on the connection; null when they are held after. */
 async function consent(
   connections: ExtensionConnectionsApi,
   connection: ExtensionConnection,
-  scope: MailScope,
+  scopes: Scope[],
 ): Promise<Problem | null> {
+  const names = scopes.join(" and ");
   let result: Awaited<ReturnType<ExtensionConnectionsApi["signIn"]>>;
   try {
-    result = await connections.signIn("microsoft", [scope], { connection: connection.id });
+    result = await connections.signIn("microsoft", scopes, { connection: connection.id });
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    return { kind: "scope-missing", connection, text: `${scope} was not requested: ${reason}` };
+    return { kind: "scope-missing", connection, text: `${names} was not requested: ${reason}` };
   }
   if (!result.ok) {
     const adminConsent =
       isAdminConsentRefusal(result.message) || result.adminConsentUrl !== undefined;
     const text = adminConsent
-      ? adminConsentText(scope, result.message, result.adminConsentUrl)
-      : `${scope} was not granted for ${connection.account}: ${result.message} ` +
+      ? adminConsentText(names, result.message, result.adminConsentUrl)
+      : `${names} was not granted for ${connection.account}: ${result.message} ` +
         "Approve prifly in the browser window it opens, then run this again.";
     return {
       kind: adminConsent ? "admin-consent" : "scope-missing",
@@ -154,12 +170,12 @@ async function consent(
     };
   }
   const after = pickConnection(connections, connection.id);
-  if (after !== null && hasScope(after, scope)) return null;
+  if (after !== null && missingScopes(after, scopes).length === 0) return null;
   return {
     kind: "scope-missing",
     connection: after ?? connection,
     text:
-      `${scope} is still missing for ${connection.account} after sign-in: approve prifly in ` +
+      `${names} is still missing for ${connection.account} after sign-in: approve prifly in ` +
       "the browser window it opens, then run this again.",
   };
 }
@@ -177,21 +193,24 @@ function contextFor(
   return { ok: true, ctx, connection };
 }
 
-/** What the board row and the sentence say when `scope` has not been approved yet. */
-export function consentNeededText(scope: MailScope, account: string): string {
-  return scope === "Mail.Read"
-    ? `Let prifly read your Outlook mail (${account})`
-    : `Let prifly save reply drafts for ${account}`;
+/** What the sentence and the status line say when `scopes` have not been approved yet. */
+export function consentNeededText(scopes: readonly Scope[], account: string): string {
+  return (
+    `prifly is not yet allowed ${scopes.join(" and ")} for ${account}: ` +
+    "the first outlook_ tool that needs it asks in the browser."
+  );
 }
+
+export type AccessOptions = { account: string; scopes: readonly Scope[]; wait?: Wait };
 
 /**
  * Like `resolveAccess`, but never opens the browser: a connection that lacks
- * `scope` is a `consent-needed` problem. For what runs without the reader
- * asking: the poller and the board's listing.
+ * one of `scopes` is a `consent-needed` problem. For what runs without the
+ * reader asking: the status line.
  */
 export function peekAccess(
   connections: ExtensionConnectionsApi | undefined,
-  options: { account: string; scope: MailScope; wait?: Wait },
+  options: AccessOptions,
 ): Access {
   if (connections === undefined) {
     return problem(
@@ -215,31 +234,28 @@ export function peekAccess(
   if (connection.state === "needs-sign-in") {
     return problem("needs-sign-in", needsSignInText(connection.account), connection);
   }
-  if (!hasScope(connection, options.scope)) {
-    return problem(
-      "consent-needed",
-      consentNeededText(options.scope, connection.account),
-      connection,
-    );
+  const missing = missingScopes(connection, options.scopes);
+  if (missing.length > 0) {
+    return problem("consent-needed", consentNeededText(missing, connection.account), connection);
   }
   return contextFor(connections, connection, options.wait);
 }
 
 /**
  * A ready Graph context for the connection `account` names (empty: the
- * first), asking the reader for `scope` first when the connection lacks it.
- * That is the incremental consent: `signIn` with the connection's id, which
- * opens the browser and resolves when they finish.
+ * first), asking the reader for the missing `scopes` first. That is the
+ * incremental consent: `signIn` with the connection's id, which opens the
+ * browser and resolves when they finish.
  */
 export async function resolveAccess(
   connections: ExtensionConnectionsApi | undefined,
-  options: { account: string; scope: MailScope; wait?: Wait },
+  options: AccessOptions,
 ): Promise<Access> {
   const peeked = peekAccess(connections, options);
   const missing = peeked.ok ? null : peeked.problem.connection;
   if (connections === undefined || missing === null) return peeked;
   if (peeked.ok || peeked.problem.kind !== "consent-needed") return peeked;
-  const refused = await consent(connections, missing, options.scope);
+  const refused = await consent(connections, missing, missingScopes(missing, options.scopes));
   if (refused !== null) return { ok: false, problem: refused };
   return contextFor(connections, pickConnection(connections, missing.id) ?? missing, options.wait);
 }

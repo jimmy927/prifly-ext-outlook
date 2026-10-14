@@ -5,13 +5,12 @@
  * into text (auth.ts does) — nothing here throws for a Graph problem.
  *
  * Graph's rules the calls below keep to:
- * - `$orderby`'s property must lead `$filter`, hence the dummy date in `unread`;
  * - `$search` takes no `$filter` or `$orderby`, so its hits are sorted here;
  * - a `conversationId` filter combined with `$orderby` is refused as an
  *   inefficient filter, so a conversation is sorted here too.
  *
- * The only writes are `createReply`, `createReplyAll` and a PATCH of a
- * draft's body. There is no call that sends.
+ * The writes (send, reply, forward, move, PATCH) are plain functions here;
+ * the tools ask the reader with `api.confirm` before they call any of them.
  */
 
 import type { ExtensionConnectionsApi } from "@prifly/extension-api";
@@ -21,13 +20,15 @@ import {
   type Mail,
   newestFirst,
   oldestFirst,
+  type Person,
   record,
   text,
   toAttachment,
   toMail,
 } from "./model";
 
-const BASE = "https://graph.microsoft.com/v1.0";
+export const GRAPH_ORIGIN = "https://graph.microsoft.com";
+const BASE = `${GRAPH_ORIGIN}/v1.0`;
 
 /** The longest a `Retry-After` is waited out. */
 export const MAX_WAIT_MS = 30_000;
@@ -37,7 +38,7 @@ const BODY_PREFER = 'outlook.body-content-type="text"';
 const LIST_SELECT =
   "id,conversationId,subject,from,toRecipients,receivedDateTime,isRead,isDraft,hasAttachments," +
   "bodyPreview,webLink,flag,categories";
-const FULL_SELECT = `${LIST_SELECT},ccRecipients,body`;
+const FULL_SELECT = `${LIST_SELECT},ccRecipients,replyTo,body`;
 
 export type Wait = (ms: number) => Promise<void>;
 
@@ -126,7 +127,7 @@ async function classify(response: Response): Promise<GraphFailure> {
     return { kind: "throttled", status, retryAfterSeconds: retryAfter(response) };
   }
   const message = await errorMessage(response);
-  if (status === 410 || /syncStateNotFound/i.test(message)) return { kind: "gone" };
+  if (status === 410) return { kind: "gone" };
   if (status === 403) return { kind: "forbidden", message };
   return { kind: "http", status, message };
 }
@@ -139,7 +140,7 @@ export async function send(
 ): Promise<GraphResult<Response>> {
   const url = pathOrUrl.startsWith("https://") ? pathOrUrl : `${BASE}${pathOrUrl}`;
   const headers = new Headers(init.headers);
-  // A caller's own preference (the delta's page size) rides along with the body type.
+  // A caller's own preference rides along with the body type.
   const own = headers.get("Prefer");
   headers.set("Prefer", own === null ? BODY_PREFER : `${BODY_PREFER}, ${own}`);
   if (init.body !== undefined) headers.set("Content-Type", "application/json");
@@ -169,6 +170,16 @@ async function sendJson(
   } catch {
     return bad({ kind: "http", status: sent.value.status, message: "The answer was not JSON." });
   }
+}
+
+/** A request whose answer has no body that matters (202 Accepted, 204 No Content). */
+async function sendNoContent(
+  ctx: GraphContext,
+  path: string,
+  body: unknown,
+): Promise<GraphResult<null>> {
+  const sent = await send(ctx, path, { method: "POST", body: JSON.stringify(body) });
+  return sent.ok ? good(null) : sent;
 }
 
 /** `$`-parameters as a query string: values percent-encoded, names left as Graph writes them. */
@@ -216,19 +227,15 @@ export async function me(ctx: GraphContext): Promise<GraphResult<Profile>> {
   });
 }
 
-/** Unread inbox mail, newest first. */
-export function unread(ctx: GraphContext, top: number): Promise<GraphResult<Mail[]>> {
-  return mailList(
+/** How many inbox messages are unread, as Outlook counts them. */
+export async function unreadCount(ctx: GraphContext): Promise<GraphResult<number>> {
+  const answer = await sendJson(
     ctx,
-    INBOX,
-    {
-      $filter: "receivedDateTime ge 1900-01-01 and isRead eq false",
-      $orderby: "receivedDateTime desc",
-      $top: top,
-      $select: LIST_SELECT,
-    },
-    (mails) => mails,
+    `/me/mailFolders/inbox?${query({ $select: "unreadItemCount" })}`,
   );
+  if (!answer.ok) return answer;
+  const count = answer.value["unreadItemCount"];
+  return good(typeof count === "number" ? count : 0);
 }
 
 /** The newest inbox mail. */
@@ -238,16 +245,6 @@ export function inbox(ctx: GraphContext, top: number): Promise<GraphResult<Mail[
     INBOX,
     { $orderby: "receivedDateTime desc", $top: top, $select: LIST_SELECT },
     (mails) => mails,
-  );
-}
-
-/** Flagged mail from every folder, newest first; each carries its flag's due time. */
-export function flagged(ctx: GraphContext, top: number): Promise<GraphResult<Mail[]>> {
-  return mailList(
-    ctx,
-    "/me/messages",
-    { $filter: "flag/flagStatus eq 'flagged'", $top: top, $select: LIST_SELECT },
-    newestFirst,
   );
 }
 
@@ -325,82 +322,190 @@ export async function downloadAttachment(
   return good(new Uint8Array(await sent.value.arrayBuffer()));
 }
 
+/** A mail folder, with the path of display names that leads to it ("Inbox/Clients"). */
+export type Folder = { id: string; name: string; path: string; unread: number; total: number };
+
+const FOLDER_SELECT = "id,displayName,childFolderCount,unreadItemCount,totalItemCount";
+const MAX_FOLDERS = 300;
+
+const count = (value: unknown) => (typeof value === "number" ? value : 0);
+
+/** Where to list a folder level from, and the path of the folder above it. */
+type FolderLevel = { path: string; url: string };
+
+function levelUrl(path: string): string {
+  return `${path}?${query({ $top: 100, $select: FOLDER_SELECT })}`;
+}
+
+/** One level's folders, and the levels below them that have children. */
+async function folderLevel(
+  ctx: GraphContext,
+  parent: FolderLevel,
+): Promise<GraphResult<{ found: Folder[]; below: FolderLevel[] }>> {
+  const answer = await sendJson(ctx, parent.url);
+  if (!answer.ok) return answer;
+  const rows = answer.value["value"];
+  const found: Folder[] = [];
+  const below: FolderLevel[] = [];
+  for (const row of Array.isArray(rows) ? rows.map(record) : []) {
+    const name = text(row["displayName"]);
+    const folder: Folder = {
+      id: text(row["id"]),
+      name,
+      path: parent.path === "" ? name : `${parent.path}/${name}`,
+      unread: count(row["unreadItemCount"]),
+      total: count(row["totalItemCount"]),
+    };
+    found.push(folder);
+    if (count(row["childFolderCount"]) > 0) {
+      below.push({
+        path: folder.path,
+        url: levelUrl(`/me/mailFolders/${id(folder.id)}/childFolders`),
+      });
+    }
+  }
+  return good({ found, below });
+}
+
+/** Every mail folder, children under their parents, at most three levels and 300 folders deep. */
+export async function folders(ctx: GraphContext): Promise<GraphResult<Folder[]>> {
+  const out: Folder[] = [];
+  let level: FolderLevel[] = [{ path: "", url: levelUrl("/me/mailFolders") }];
+  for (let depth = 0; depth < 3 && level.length > 0 && out.length < MAX_FOLDERS; depth++) {
+    const next: FolderLevel[] = [];
+    for (const parent of level) {
+      const listed = await folderLevel(ctx, parent);
+      if (!listed.ok) return listed;
+      out.push(...listed.value.found);
+      next.push(...listed.value.below);
+    }
+    level = next;
+  }
+  return good(out.slice(0, MAX_FOLDERS));
+}
+
+/** A recipient as Graph writes one. */
+function recipient(address: string): Json {
+  return { emailAddress: { address } };
+}
+
+/** A file to attach, read from disk already. */
+export type OutgoingFile = { name: string; contentType: string; bytes: Uint8Array };
+
+function fileAttachment(file: OutgoingFile): Json {
+  return {
+    "@odata.type": "#microsoft.graph.fileAttachment",
+    name: file.name,
+    contentType: file.contentType,
+    contentBytes: Buffer.from(file.bytes).toString("base64"),
+  };
+}
+
+export type NewMail = {
+  to: string[];
+  cc: string[];
+  bcc: string[];
+  subject: string;
+  body: string;
+  files: OutgoingFile[];
+};
+
+/** Sends a new mail at once (`sendMail`), saved to Sent Items. */
+export function sendMail(ctx: GraphContext, mail: NewMail): Promise<GraphResult<null>> {
+  return sendNoContent(ctx, "/me/sendMail", {
+    message: {
+      subject: mail.subject,
+      body: { contentType: "Text", content: mail.body },
+      toRecipients: mail.to.map(recipient),
+      ccRecipients: mail.cc.map(recipient),
+      bccRecipients: mail.bcc.map(recipient),
+      attachments: mail.files.map(fileAttachment),
+    },
+    saveToSentItems: true,
+  });
+}
+
+export type ReplyKind = "reply" | "replyAll" | "forward";
+
+const CREATE_ACTION: Record<ReplyKind, string> = {
+  reply: "createReply",
+  replyAll: "createReplyAll",
+  forward: "createForward",
+};
+
 /**
- * A threaded draft in Drafts, `comment` above the quoted mail. This creates a
- * draft only: Graph sends nothing until the reader sends it from Outlook.
+ * A threaded draft in Drafts, `comment` above the quoted mail: a reply, a
+ * reply to all, or a forward to `to`. Nothing is sent until `sendDraft`.
  */
-export async function createReply(
+export async function createDraft(
   ctx: GraphContext,
   messageId: string,
-  all: boolean,
+  kind: ReplyKind,
   comment: string,
+  to: string[] = [],
 ): Promise<GraphResult<Mail>> {
-  const action = all ? "createReplyAll" : "createReply";
-  const answer = await sendJson(ctx, `/me/messages/${id(messageId)}/${action}`, {
+  const body = kind === "forward" ? { comment, toRecipients: to.map(recipient) } : { comment };
+  const answer = await sendJson(ctx, `/me/messages/${id(messageId)}/${CREATE_ACTION[kind]}`, {
     method: "POST",
-    body: JSON.stringify({ comment }),
+    body: JSON.stringify(body),
+  });
+  return answer.ok ? good(toMail(answer.value)) : answer;
+}
+
+/** Adds a file (up to 3 MB) to a draft. */
+export async function addAttachment(
+  ctx: GraphContext,
+  draftId: string,
+  file: OutgoingFile,
+): Promise<GraphResult<null>> {
+  const sent = await send(ctx, `/me/messages/${id(draftId)}/attachments`, {
+    method: "POST",
+    body: JSON.stringify(fileAttachment(file)),
+  });
+  return sent.ok ? good(null) : sent;
+}
+
+/** Sends a draft. */
+export function sendDraft(ctx: GraphContext, draftId: string): Promise<GraphResult<null>> {
+  return sendNoContent(ctx, `/me/messages/${id(draftId)}/send`, {});
+}
+
+/** Moves a message to a folder (an id or a well-known name); the moved copy has a new id. */
+export async function moveMessage(
+  ctx: GraphContext,
+  messageId: string,
+  destinationId: string,
+): Promise<GraphResult<Mail>> {
+  const answer = await sendJson(ctx, `/me/messages/${id(messageId)}/move`, {
+    method: "POST",
+    body: JSON.stringify({ destinationId }),
+  });
+  return answer.ok ? good(toMail(answer.value)) : answer;
+}
+
+/** Changes a message's writable properties: `isRead`, `categories`, `flag`, a draft's `body`. */
+export async function patchMessage(
+  ctx: GraphContext,
+  messageId: string,
+  patch: Json,
+): Promise<GraphResult<Mail>> {
+  const answer = await sendJson(ctx, `/me/messages/${id(messageId)}`, {
+    method: "PATCH",
+    body: JSON.stringify(patch),
   });
   return answer.ok ? good(toMail(answer.value)) : answer;
 }
 
 /** Replaces a draft's body with plain `body`. */
-export async function updateDraft(
+export function updateDraft(
   ctx: GraphContext,
   draftId: string,
   body: string,
 ): Promise<GraphResult<Mail>> {
-  const answer = await sendJson(ctx, `/me/messages/${id(draftId)}`, {
-    method: "PATCH",
-    body: JSON.stringify({ body: { contentType: "text", content: body } }),
-  });
-  return answer.ok ? good(toMail(answer.value)) : answer;
+  return patchMessage(ctx, draftId, { body: { contentType: "text", content: body } });
 }
 
-export type InboxDelta = {
-  changed: Mail[];
-  /** Ids of mail removed from the inbox since the last delta. */
-  removed: string[];
-  /** Pass it to the next `inboxDelta`; not a secret. */
-  deltaLink: string;
-};
-
-const MAX_DELTA_PAGES = 50;
-
-/** A delta page's rows: a mail that changed, or the id of one that was removed. */
-function sortDeltaRows(rows: unknown, changed: Mail[], removed: string[]): void {
-  for (const row of Array.isArray(rows) ? rows : []) {
-    if ("@removed" in record(row)) removed.push(text(record(row)["id"]));
-    else changed.push(toMail(row));
-  }
-}
-
-/**
- * The inbox's changes since `link` (the `deltaLink` of the last run), or all of
- * it when `link` is left out, or only mail received since `since` (an ISO
- * time) so a first run does not walk the whole inbox. A `gone` failure means
- * the link expired: start again without one.
- */
-export async function inboxDelta(
-  ctx: GraphContext,
-  link?: string,
-  since?: string,
-): Promise<GraphResult<InboxDelta>> {
-  const first = {
-    ...(since === undefined ? {} : { $filter: `receivedDateTime ge ${since}` }),
-    $select: LIST_SELECT,
-  };
-  let next = link ?? `${INBOX}/delta?${query(first)}`;
-  const changed: Mail[] = [];
-  const removed: string[] = [];
-  const headers = { Prefer: "odata.maxpagesize=100" };
-  for (let page = 0; page < MAX_DELTA_PAGES; page++) {
-    const answer = await sendJson(ctx, next, { headers });
-    if (!answer.ok) return answer;
-    sortDeltaRows(answer.value["value"], changed, removed);
-    const deltaLink = text(answer.value["@odata.deltaLink"]);
-    if (deltaLink !== "") return good({ changed, removed, deltaLink });
-    next = text(answer.value["@odata.nextLink"]);
-    if (next === "") break;
-  }
-  return bad({ kind: "http", status: 200, message: "The inbox delta never reached its end." });
+/** The addresses of people, lower-cased, for comparing recipient lists. */
+export function addresses(people: Person[]): string[] {
+  return people.map((person) => person.address.toLowerCase()).filter((a) => a !== "");
 }

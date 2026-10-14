@@ -1,56 +1,25 @@
 {
   "id": "outlook",
   "name": "Outlook",
-  "description": "Start sessions from Outlook mail, and search, read and draft replies from any session. Never sends.",
-  "version": "0.2.1",
+  "description": "Search, read, send, reply, forward, move, flag, categorise and delete Outlook mail, and call any Microsoft Graph mail or calendar endpoint, from any session. Every write waits for your confirm.",
+  "version": "0.3.0",
   "main": "index.ts",
   "prompt": "prompt.md",
   "icon": "outlook",
   "connections": [
     {
       "provider": "microsoft",
-      "scopes": ["Mail.Read"],
-      "why": "Reads your mail for the From an Outlook mail board and the outlook_* tools."
-    },
-    {
-      "provider": "microsoft",
-      "scopes": ["Mail.ReadWrite"],
-      "optional": true,
-      "why": "Saves reply drafts in Drafts; never sends."
-    }
-  ],
-  "launch": [
-    {
-      "id": "mail",
-      "label": "From an Outlook mail…",
-      "icon": "outlook",
-      "description": "Unread, Inbox and Flagged mail as a board, one card per conversation. Starts a session with the whole conversation and its attachments.",
-      "searchPlaceholder": "Search mail (KQL): from:ada subject:invoice received>=2026-10-01 hasattachments:true"
+      "scopes": ["Mail.ReadWrite", "Mail.Send", "Calendars.ReadWrite"],
+      "why": "Reads and changes your mail, sends mail you confirm, and reads and changes your calendar for the outlook_* tools. Every write waits for your confirm."
     }
   ],
   "settings": [
     {
-      "id": "pollMinutes",
-      "label": "Check mail every (minutes)",
-      "description": "How often the board, the unread count and replies in started conversations are refreshed.",
-      "type": "number",
-      "default": 3,
-      "min": 1,
-      "max": 60
-    },
-    {
       "id": "account",
       "label": "Microsoft account",
-      "description": "Which connected Microsoft account to read, by its address or connection id. Empty: the first one. \"Switch account…\" on the board overrides it.",
+      "description": "Which connected Microsoft account the tools use, by its address or connection id. Empty: the first one. A tool's account argument overrides it.",
       "type": "string",
       "default": ""
-    },
-    {
-      "id": "columns",
-      "label": "Board columns",
-      "description": "Columns separated by |, each Name = unread, inbox, flagged or a KQL search, e.g. Unread = unread | Invoices = subject:invoice hasattachments:true.",
-      "type": "string",
-      "default": "Unread = unread | Inbox = inbox | Flagged = flagged"
     }
   ]
 }

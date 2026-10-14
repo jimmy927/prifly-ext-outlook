@@ -1,61 +1,56 @@
 import { expect, test } from "bun:test";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
-import { boot, cleanUp } from "./support";
+import * as extension from "../index";
 
-cleanUp();
+const root = join(import.meta.dir, "..");
 
-/** Everything the board, the launch, the open and the poller do, once. */
-async function useEverything() {
-  const ext = await boot();
-  await ext.board();
-  await ext.board("contract");
-  await ext.board("from:dana");
-  await ext.extension.open("mail", "convA");
-  await ext.extension.open("mail", "convB");
-  await ext.extension.launch("mail", "convA", "", { again: false });
-  await ext.extension.launch("mail", "convB", "", { again: false });
-  await ext.extension.launched("mail", "convB", "session-1");
-  await ext.extension.launch("mail", "row:grant", "", { again: false });
-  await ext.extension.launch("mail", "action:switch", "ada@example.com", { again: false });
-  ext.graph.messages.push({
-    ...ext.graph.messages[3],
-    id: "m9",
-    receivedDateTime: "2026-10-11T11:00:00Z",
-  });
-  await ext.poll();
-  ext.graph.expiredDelta = true;
-  await ext.poll();
-  return ext;
+async function sources(): Promise<{ file: string; source: string }[]> {
+  const files = (await readdir(root)).filter((name) => name.endsWith(".ts"));
+  return Promise.all(
+    files.map(async (file) => ({ file, source: await readFile(join(root, file), "utf8") })),
+  );
 }
 
-test("the board, launch, open and poller send only GET requests, to no send path", async () => {
-  const ext = await useEverything();
-  const requests = ext.connections.requests;
-  expect(requests.length).toBeGreaterThan(30);
-  for (const request of requests) {
-    expect(request.method).toBe("GET");
-    expect(new URL(request.url).pathname.toLowerCase()).not.toMatch(
-      /\/(send|sendmail|reply|replyall|forward|createreply|createreplyall|createforward)$/,
-    );
-  }
-  expect(ext.graph.calls.filter((call) => !call.startsWith("GET "))).toEqual([]);
+test("the manifest has no launcher, and one Microsoft connection with the write scopes", async () => {
+  const manifest = JSON.parse(await readFile(join(root, "prifly-extension.json"), "utf8"));
+  expect(manifest.launch).toBeUndefined();
+  expect(manifest.menu).toBeUndefined();
+  expect(manifest.panels).toBeUndefined();
+  expect(manifest.connections).toEqual([
+    expect.objectContaining({
+      provider: "microsoft",
+      scopes: ["Mail.ReadWrite", "Mail.Send", "Calendars.ReadWrite"],
+    }),
+  ]);
+  expect(manifest.description).not.toMatch(/never sends/i);
+  expect(manifest.settings.map((field: { id: string }) => field.id)).toEqual(["account"]);
 });
 
-test("the Graph client and everything built on it have no call that sends", async () => {
-  const files = (await readdir(join(import.meta.dir, ".."))).filter((name) => name.endsWith(".ts"));
-  expect(files).toContain("launch.ts");
-  expect(files).toContain("poll.ts");
-  for (const file of files) {
-    const source = await readFile(join(import.meta.dir, "..", file), "utf8");
-    // No sendMail, no /send, no /forward, no direct /reply (createReply makes a draft and is graph.ts's alone).
-    expect(source, file).not.toMatch(
-      /sendMail|["'`/]send["'`/]|\/forward\b|\/reply(All)?\b|createForward/i,
-    );
-    if (file !== "graph.ts" && file !== "tools.ts") {
-      expect(source, file).not.toMatch(
-        /createReply|updateDraft|method:\s*["'](POST|PATCH|PUT|DELETE)/,
+test("the module exports only activate: no launcher entry points", () => {
+  expect(Object.keys(extension)).toEqual(["activate"]);
+});
+
+test("no source shows a chip, lights a flag or offers a board", async () => {
+  const all = await sources();
+  expect(all.map((each) => each.file)).not.toContain("board.ts");
+  expect(all.map((each) => each.file)).not.toContain("launch.ts");
+  for (const { file, source } of all) {
+    expect(source, file).not.toMatch(/\bapi\??\.(show|flag|snoozeOptions)\b/);
+    expect(source, file).not.toMatch(/\.(show|flag)\??\(/);
+    expect(source, file).not.toMatch(/LaunchBoard|LaunchChoice|LauncherFlag|Decoration/);
+  }
+});
+
+test("every file that calls a Graph write also asks the reader first", async () => {
+  const writers = ["compose.ts", "changes.ts", "api-tool.ts", "tools.ts"];
+  for (const { file, source } of await sources()) {
+    const writes =
+      /\b(sendMail|createDraft|sendDraft|addAttachment|moveMessage|patchMessage|updateDraft)\(|method(,|:\s*["'](POST|PATCH|PUT|DELETE))/.test(
+        source,
       );
-    }
+    if (file === "graph.ts" || !writes) continue;
+    expect(writers, file).toContain(file);
+    expect(source, file).toContain("await ask(api,");
   }
 });

@@ -1,10 +1,13 @@
 /**
  * A fake Microsoft Graph for the tests: a `FakeProvider` over a small mailbox
- * (two conversations, a png, a pdf and a forwarded .eml). It keeps to the
- * rules the real Graph enforces on the calls graph.ts makes — `$orderby`
- * leading `$filter`, no `$filter`/`$orderby` with `$search`, no `$orderby`
- * with a `conversationId` filter — so a call that breaks them fails here too.
- * It can answer 429 with `Retry-After`, 410 and a 401 claims challenge.
+ * (two conversations, a png, a pdf and a forwarded .eml) and a few folders.
+ * It keeps to the rules the real Graph enforces on the calls graph.ts makes —
+ * `$orderby` leading `$filter`, no `$filter`/`$orderby` with `$search`, no
+ * `$orderby` with a `conversationId` filter — so a call that breaks them
+ * fails here too. It answers the writes the tools make (sendMail, createReply,
+ * createReplyAll, createForward, attachments, send, move, PATCH), keeping what
+ * was sent in `sent`, and can answer 429 with `Retry-After` and a 401 claims
+ * challenge.
  */
 
 import type { FakeProvider } from "./fake-api";
@@ -26,6 +29,7 @@ export function mail(fields: Entry): Entry {
     categories: [],
     flag: { flagStatus: "notFlagged" },
     ccRecipients: [],
+    replyTo: [],
     webLink: `https://outlook.office.com/mail/id/${id}`,
     ...fields,
   };
@@ -63,13 +67,14 @@ export function mailbox(): Entry[] {
       conversationId: "convB",
       subject: "Partner Center notice",
       from: who(DANA),
-      toRecipients: [who(ADA)],
+      toRecipients: [who(ADA), who(BOB)],
       receivedDateTime: "2026-10-10T07:00:00Z",
       hasAttachments: true,
       flag: {
         flagStatus: "flagged",
         dueDateTime: { dateTime: "2026-10-12T00:00:00.0000000", timeZone: "UTC" },
       },
+      categories: ["Partners"],
       bodyPreview: "Forwarding the notice",
       body: body("Forwarding the notice from Microsoft."),
     }),
@@ -148,6 +153,40 @@ function attachmentsOf(messageId: string): StoredAttachment[] {
   return [];
 }
 
+/** The folders: Inbox (with Clients under it), Archive and a second "Clients" at the top. */
+export const FOLDERS: Entry[] = [
+  {
+    id: "f-inbox",
+    displayName: "Inbox",
+    childFolderCount: 1,
+    unreadItemCount: 1,
+    totalItemCount: 4,
+  },
+  {
+    id: "f-archive",
+    displayName: "Archive",
+    childFolderCount: 0,
+    unreadItemCount: 0,
+    totalItemCount: 9,
+  },
+  {
+    id: "f-projects",
+    displayName: "Projects",
+    childFolderCount: 0,
+    unreadItemCount: 0,
+    totalItemCount: 2,
+  },
+];
+const CHILDREN: Entry[] = [
+  {
+    id: "f-clients",
+    displayName: "Clients",
+    childFolderCount: 0,
+    unreadItemCount: 0,
+    totalItemCount: 3,
+  },
+];
+
 /** A scripted failure for the next requests. */
 export type Fault =
   | { kind: "throttle"; status: 429 | 503; retryAfter: string | null; times: number }
@@ -158,10 +197,16 @@ export type FakeGraph = {
   messages: Entry[];
   /** Every request's method and path with query, in order. */
   calls: string[];
+  /** The JSON body of every request that had one, by its call. */
+  bodies: { call: string; body: Entry }[];
+  /** Mail that went out: a `sendMail` message, or a draft that was sent. */
+  sent: Entry[];
+  /** Files added to drafts, by draft id. */
+  attached: Map<string, Entry[]>;
   /** Set to make the next request(s) fail. */
   fault: Fault | null;
-  /** The delta link the fake treats as expired (410 syncStateNotFound). */
-  expiredDelta: boolean;
+  /** Recipients the next created draft gets instead of the ones worked out from the original. */
+  draftTo: Entry[] | null;
 };
 
 const error = (status: number, code: string, message: string, headers?: Record<string, string>) =>
@@ -173,14 +218,8 @@ function checkOrder(url: URL): Response | null {
   if (url.searchParams.has("$search") && (filter !== null || order !== null)) {
     return error(400, "BadRequest", "$search cannot be combined with $filter or $orderby");
   }
-  if (filter !== null && order !== null) {
-    const lead = order.split(" ")[0] ?? "";
-    if (!filter.startsWith(lead)) {
-      return error(400, "InefficientFilter", "The $orderby property must lead the $filter");
-    }
-    if (filter.includes("conversationId")) {
-      return error(400, "InefficientFilter", "conversationId cannot be combined with $orderby");
-    }
+  if (filter !== null && order !== null && filter.includes("conversationId")) {
+    return error(400, "InefficientFilter", "conversationId cannot be combined with $orderby");
   }
   return null;
 }
@@ -192,11 +231,7 @@ function select(messages: Entry[], url: URL): Entry[] {
     .replace(/\\"/g, '"')
     .toLowerCase();
   const conversation = /conversationId eq '([^']*)'/.exec(filter)?.[1];
-  let out = messages;
-  if (filter.includes("isRead eq false")) out = out.filter((m) => m["isRead"] === false);
-  if (filter.includes("flagStatus eq 'flagged'")) {
-    out = out.filter((m) => (m["flag"] as Entry)["flagStatus"] === "flagged");
-  }
+  let out = messages.filter((m) => m["isDraft"] !== true);
   if (conversation !== undefined) out = out.filter((m) => m["conversationId"] === conversation);
   if (term !== "") {
     const needle = term.replace(/^[a-z]+:/, "");
@@ -213,23 +248,34 @@ function select(messages: Entry[], url: URL): Entry[] {
   return out.slice(0, top);
 }
 
-/** A fake Graph over `mailbox()`; change `fault`, `messages` and `expiredDelta` between calls. */
+type Person = { emailAddress: { address: string } };
+const addressOf = (entry: unknown) => (entry as Person).emailAddress.address;
+const notAda = (entry: unknown) => addressOf(entry) !== ADA.address;
+
+/** A fake Graph over `mailbox()`; change `fault` and `messages` between calls. */
 export function fakeGraph(): FakeGraph {
   let draftCount = 0;
   const graph: FakeGraph = {
     messages: mailbox(),
     calls: [],
+    bodies: [],
+    sent: [],
+    attached: new Map(),
     fault: null,
-    expiredDelta: false,
+    draftTo: null,
     provider: async (request) => {
       const url = new URL(request.url);
       const path = url.pathname.replace(/^\/v1\.0/, "");
-      graph.calls.push(`${request.method} ${path}${url.search}`);
-      return await route(request, url, path);
+      const call = `${request.method} ${path}${url.search}`;
+      graph.calls.push(call);
+      const text = request.method === "GET" ? "" : await request.text();
+      const json = text === "" ? {} : (JSON.parse(text) as Entry);
+      if (text !== "") graph.bodies.push({ call, body: json });
+      return route(request.method, url, path, json);
     },
   };
 
-  const route = async (request: Request, url: URL, path: string): Promise<Response> => {
+  const route = (method: string, url: URL, path: string, json: Entry): Response => {
     const fault = graph.fault;
     if (fault?.kind === "claims") {
       return new Response("", {
@@ -247,49 +293,99 @@ export function fakeGraph(): FakeGraph {
     }
     const ordered = checkOrder(url);
     if (ordered !== null) return ordered;
-    return await answer(request, url, path);
+    return answer(method, url, path, json);
   };
 
-  const answer = async (request: Request, url: URL, path: string): Promise<Response> => {
-    if (path === "/me") {
-      return Response.json({ displayName: "Ada Lovelace", mail: "ada@example.com" });
-    }
-    if (path === "/me/mailFolders/inbox/messages/delta") return delta(url);
-    if (path === "/me/mailFolders/inbox/messages" || path === "/me/messages") {
-      return Response.json({ value: select(graph.messages, url) });
-    }
+  /** The routes that are not one message, by "METHOD path". */
+  const fixed: Record<string, (url: URL, json: Entry) => Response> = {
+    "GET /me": () => Response.json({ displayName: "Ada Lovelace", mail: "ada@example.com" }),
+    "GET /me/mailFolders/inbox": () =>
+      Response.json({
+        id: "f-inbox",
+        unreadItemCount: graph.messages.filter((m) => m["isRead"] === false).length,
+      }),
+    "GET /me/mailFolders": () => Response.json({ value: FOLDERS }),
+    "GET /me/mailFolders/f-inbox/childFolders": () => Response.json({ value: CHILDREN }),
+    "POST /me/sendMail": (_url, json) => {
+      graph.sent.push(json["message"] as Entry);
+      return new Response(null, { status: 202 });
+    },
+    "GET /me/mailFolders/inbox/messages": (url) =>
+      Response.json({ value: select(graph.messages, url) }),
+    "GET /me/messages": (url) => Response.json({ value: select(graph.messages, url) }),
+  };
+
+  const answer = (method: string, url: URL, path: string, json: Entry): Response => {
+    const route = fixed[`${method} ${path}`];
+    if (route !== undefined) return route(url, json);
     const one = /^\/me\/messages\/([^/]+)(?:\/(.*))?$/.exec(path);
     if (one === null) return error(404, "NotFound", `No route ${path}`);
     const id = decodeURIComponent(one[1] ?? "");
-    const rest = one[2] ?? "";
     const found = graph.messages.find((m) => m["id"] === id);
     if (found === undefined) return error(404, "ErrorItemNotFound", "The item was not found");
-    return await messageAnswer(request, found, rest);
+    return messageAnswer(method, found, one[2] ?? "", json);
   };
 
-  const messageAnswer = async (request: Request, found: Entry, rest: string): Promise<Response> => {
-    if (rest === "" && request.method === "GET") return Response.json(found);
-    if (rest === "" && request.method === "PATCH") {
-      const patch = (await request.json()) as { body?: Entry };
-      Object.assign(found, { body: patch.body });
+  const createDraft = (found: Entry, rest: string, json: Entry): Response => {
+    draftCount++;
+    const original = found;
+    const replyTo =
+      (original["replyTo"] as Entry[]).length > 0 ? original["replyTo"] : [original["from"]];
+    const sender = replyTo as Entry[];
+    const all = rest === "createReplyAll";
+    const to =
+      rest === "createForward"
+        ? (json["toRecipients"] as Entry[])
+        : all
+          ? [...sender, ...(original["toRecipients"] as Entry[]).filter(notAda)]
+          : sender;
+    const cc = all ? (original["ccRecipients"] as Entry[]).filter(notAda) : [];
+    const prefix = rest === "createForward" ? "FW" : "RE";
+    const draft = mail({
+      id: `draft${draftCount}`,
+      conversationId: original["conversationId"],
+      subject: `${prefix}: ${String(original["subject"]).replace(/^RE: /, "")}`,
+      isDraft: true,
+      from: who(ADA),
+      toRecipients: graph.draftTo ?? to,
+      ccRecipients: graph.draftTo === null ? cc : [],
+      receivedDateTime: "2026-10-11T10:00:00Z",
+      body: body(String(json["comment"])),
+    });
+    graph.messages.push(draft);
+    return Response.json(draft, { status: 201 });
+  };
+
+  /** What can be done to one message, by "METHOD rest-of-path". */
+  const onMessage: Record<string, (found: Entry, json: Entry) => Response> = {
+    "GET ": (found) => Response.json(found),
+    "PATCH ": (found, json) => {
+      Object.assign(found, json);
       return Response.json(found);
-    }
-    if (rest === "createReply" || rest === "createReplyAll") {
-      draftCount++;
-      const draft = mail({
-        id: `draft${draftCount}`,
-        conversationId: found["conversationId"],
-        subject: `RE: ${String(found["subject"])}`,
-        isDraft: true,
-        from: who(ADA),
-        toRecipients: [found["from"]],
-        receivedDateTime: "2026-10-11T10:00:00Z",
-        body: body(String(((await request.json()) as Entry)["comment"])),
-      });
-      graph.messages.push(draft);
-      return Response.json(draft, { status: 201 });
-    }
-    return attachmentAnswer(String(found["id"]), rest);
+    },
+    "POST createReply": (found, json) => createDraft(found, "createReply", json),
+    "POST createReplyAll": (found, json) => createDraft(found, "createReplyAll", json),
+    "POST createForward": (found, json) => createDraft(found, "createForward", json),
+    "POST attachments": (found, json) => {
+      const list = graph.attached.get(String(found["id"])) ?? [];
+      list.push(json);
+      graph.attached.set(String(found["id"]), list);
+      return Response.json({ id: `att${list.length}`, ...json }, { status: 201 });
+    },
+    "POST send": (found) => {
+      found["isDraft"] = false;
+      graph.sent.push(found);
+      return new Response(null, { status: 202 });
+    },
+    "POST move": (found, json) => {
+      found["parentFolderId"] = json["destinationId"];
+      return Response.json({ ...found, id: `${String(found["id"])}-moved` }, { status: 201 });
+    },
+  };
+
+  const messageAnswer = (method: string, found: Entry, rest: string, json: Entry): Response => {
+    const route = onMessage[`${method} ${rest}`];
+    return route === undefined ? attachmentAnswer(String(found["id"]), rest) : route(found, json);
   };
 
   const attachmentAnswer = (id: string, rest: string): Response => {
@@ -299,32 +395,6 @@ export function fakeGraph(): FakeGraph {
     const found = stored.find((s) => s.meta["id"] === one?.[1]);
     if (one === null || found === undefined) return error(404, "NotFound", `No route ${rest}`);
     return one[2] === undefined ? Response.json(found.meta) : new Response(found.bytes);
-  };
-
-  const delta = (url: URL): Response => {
-    if (graph.expiredDelta && url.searchParams.has("$deltatoken")) {
-      return error(410, "syncStateNotFound", "The sync state was not found");
-    }
-    const base = "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta";
-    const token = url.searchParams.get("$deltatoken");
-    if (token !== null) {
-      // "T<n>": the mailbox had n messages then; whatever was pushed since is the change.
-      const seen = Number(token.replace(/^T/, ""));
-      return Response.json({
-        value: graph.messages.slice(seen),
-        "@odata.deltaLink": `${base}?$deltatoken=T${graph.messages.length}`,
-      });
-    }
-    if (!url.searchParams.has("$skiptoken")) {
-      return Response.json({
-        value: graph.messages.slice(0, 2),
-        "@odata.nextLink": `${base}?$skiptoken=2`,
-      });
-    }
-    return Response.json({
-      value: graph.messages.slice(2),
-      "@odata.deltaLink": `${base}?$deltatoken=T${graph.messages.length}`,
-    });
   };
 
   return graph;

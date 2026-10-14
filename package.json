@@ -3,7 +3,7 @@
   "private": true,
   "license": "FSL-1.1-ALv2",
   "type": "module",
-  "description": "A prifly extension: read, search and draft replies to Outlook mail through a connected Microsoft account. Never sends.",
+  "description": "A prifly extension: search, read, send and change Outlook mail, and call Microsoft Graph, through a connected Microsoft account. Every write waits for the reader's confirm.",
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit",
@@ -11,7 +11,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.14",
-    "@prifly/extension-api": "git+ssh://git@github.com/jimmy927/prifly-extension-api.git#v0.5.0",
+    "@prifly/extension-api": "git+ssh://git@github.com/jimmy927/prifly-extension-api.git#v0.6.0",
     "@types/bun": "^1.1.14",
     "typescript": "^7.0.2"
   }

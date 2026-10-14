@@ -18,7 +18,8 @@ const ACCOUNT: FakeAccount = {
   scopes: ["User.Read", "Mail.Read"],
 };
 
-const SCOPES = { microsoft: ["Mail.Read", "Mail.ReadWrite"] };
+// The manifest's scopes: Mail.Read is not among them, so a missing Mail.Read is asked as Mail.ReadWrite.
+const SCOPES = { microsoft: ["Mail.ReadWrite", "Mail.Send", "Calendars.ReadWrite"] };
 
 let folder = "";
 let stop: (() => void) | undefined;
@@ -49,14 +50,27 @@ function setup(accounts: FakeAccount[] = [{ ...ACCOUNT, scopes: [...ACCOUNT.scop
   return { graph, connections, fake };
 }
 
-test("activate registers the three tools", async () => {
+test("activate registers the read, write, generic and docs tools", async () => {
   const fake = fakeApi();
   stop = (await module.activate(fake.api)) ?? undefined;
   expect(fake.tools().map((tool) => tool.name)).toEqual([
     "outlook_search",
     "outlook_read",
+    "outlook_folders",
     "outlook_draft_reply",
+    "outlook_send",
+    "outlook_reply",
+    "outlook_reply_all",
+    "outlook_forward",
+    "outlook_move",
+    "outlook_delete",
+    "outlook_categories",
+    "outlook_flag",
+    "outlook_mark_read",
+    "outlook_api",
+    "outlook_api_docs",
   ]);
+  expect(fake.ui).toEqual([]);
 });
 
 test("outlook_search lists id | date | from | subject | attachments, newest first", async () => {
@@ -181,7 +195,7 @@ test("a connection without Mail.Read is walked through incremental consent", asy
     return signIn(provider, scopes, options);
   };
   const answer = await fake.callTool("outlook_search", { query: "contract" });
-  expect(asked).toEqual([["Mail.Read"]]);
+  expect(asked).toEqual([["Mail.ReadWrite"]]);
   expect(answer).toContain("m1 |");
 });
 
@@ -189,7 +203,9 @@ test("when the reader does not approve Mail.Read, the answer says to approve it 
   const { fake, connections } = setup([{ ...ACCOUNT, scopes: ["User.Read"] }]);
   connections.connections.signIn = async () => ({ ok: false, message: "Sign-in timed out." });
   const answer = await fake.callTool("outlook_search", { query: "x" });
-  expect(answer).toContain("Mail.Read was not granted for ada@example.com: Sign-in timed out.");
+  expect(answer).toContain(
+    "Mail.ReadWrite was not granted for ada@example.com: Sign-in timed out.",
+  );
   expect(answer).toContain("Approve prifly in the browser");
 });
 
@@ -313,26 +329,27 @@ test("a missing message and a missing argument are text", async () => {
   );
 });
 
-test("no request ever goes to a send path", async () => {
-  const { fake, graph, connections } = setup();
+test("searching and reading send only GET requests", async () => {
+  const { fake, graph } = setup();
   await fake.callTool("outlook_search", { query: "contract" });
   await fake.callTool("outlook_read", { id: "m1", conversation: true });
-  await fake.callTool("outlook_draft_reply", { id: "m1", body: "a" });
-  await fake.callTool("outlook_draft_reply", { id: "m3", body: "b", all: true });
-  await fake.callTool("outlook_draft_reply", { id: "m1", body: "c", replace_draft_id: "draft1" });
-  const paths = connections.requests.map((request) => new URL(request.url).pathname.toLowerCase());
-  expect(paths.length).toBeGreaterThan(8);
-  for (const path of paths) expect(path).not.toMatch(/\/(send|sendmail|reply|replyall)$/);
-  expect(
-    graph.calls.filter((call) => call.startsWith("POST")).map((call) => call.split("?")[0]),
-  ).toEqual(["POST /me/messages/m1/createReply", "POST /me/messages/m3/createReplyAll"]);
+  await fake.callTool("outlook_folders", {});
+  expect(graph.calls.length).toBeGreaterThan(5);
+  expect(graph.calls.filter((call) => !call.startsWith("GET "))).toEqual([]);
+  expect(fake.confirms).toEqual([]);
 });
 
 test("a 503 on creating a draft is not repeated, so no second draft appears", async () => {
   const { fake, graph } = setup([{ ...ACCOUNT, scopes: ["Mail.Read", "Mail.ReadWrite"] }]);
-  graph.fault = { kind: "throttle", status: 503, retryAfter: "1", times: 5 };
+  // The fault starts once the reader confirms: the GET of the original before it goes through.
+  fake.api.confirm = async () => {
+    graph.fault = { kind: "throttle", status: 503, retryAfter: "1", times: 5 };
+    return true;
+  };
   const answer = await fake.callTool("outlook_draft_reply", { id: "m1", body: "x" });
   expect(answer).toContain("throttling requests (503)");
   expect(waits).toEqual([]);
-  expect(graph.calls).toEqual(["POST /me/messages/m1/createReply"]);
+  expect(graph.calls.filter((call) => !call.startsWith("GET "))).toEqual([
+    "POST /me/messages/m1/createReply",
+  ]);
 });

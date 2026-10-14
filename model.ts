@@ -26,6 +26,8 @@ export type Mail = {
   from: Person;
   to: Person[];
   cc: Person[];
+  /** Where a reply goes instead of `from`, when the sender set it; empty when not selected. */
+  replyTo: Person[];
   /** ISO time the mail arrived. */
   received: string;
   isRead: boolean;
@@ -79,6 +81,7 @@ export function toMail(raw: unknown): Mail {
     from: toPerson(r["from"]),
     to: toPeople(r["toRecipients"]),
     cc: toPeople(r["ccRecipients"]),
+    replyTo: toPeople(r["replyTo"]),
     received: text(r["receivedDateTime"]),
     isRead: r["isRead"] === true,
     isDraft: r["isDraft"] === true,

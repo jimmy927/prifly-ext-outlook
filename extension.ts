@@ -1,68 +1,47 @@
 /**
  * The extension as one instance: `activate` is given the api, registers the
- * MCP tools and starts the poller; the other functions answer the launcher.
- * `index.ts` exports one instance; tests make their own with a clock and
- * timers of their own.
+ * MCP tools and keeps the status line. There is no board, chip or launcher:
+ * everything is a tool a session calls. `index.ts` exports one instance;
+ * tests make their own with timers and fetches of their own.
  */
 
-import type {
-  ExtensionApi,
-  ExtensionModule,
-  Launch,
-  LaunchBoard,
-  LaunchItem,
-} from "@prifly/extension-api";
-import { choices } from "./choices";
-import { createHub, type Hub, type HubDeps } from "./hub";
-import { launch, launched } from "./launch";
-import { open } from "./open";
-import { type Poller, startPoller } from "./poll";
+import type { ExtensionModule } from "@prifly/extension-api";
+import type { ToolDeps } from "./common";
+import { type Every, startStatus } from "./status";
 import { outlookTools } from "./tools";
 
-export type Extension = Required<
-  Pick<ExtensionModule, "activate" | "choices" | "open" | "launch" | "launched" | "action">
-> & {
-  /** The poller, once activated; tests run a round by hand. */
-  poller: () => Poller | null;
-  hub: () => Hub | null;
+export type ExtensionDeps = ToolDeps & {
+  /** The status line's 15-minute timer; tests fire it by hand. */
+  every?: Every;
 };
 
-export function makeExtension(deps: HubDeps = {}): Extension {
-  let api: ExtensionApi | null = null;
-  let hub: Hub | null = null;
-  let poller: Poller | null = null;
-  const nothing: LaunchBoard = { columns: [], items: [] };
-  const stopped: Launch = { prompt: "", message: "The Outlook extension is not running." };
+export type Extension = Required<Pick<ExtensionModule, "activate">> & {
+  /** Sets the status line again now; tests await it. */
+  refreshStatus: () => Promise<void>;
+};
+
+export function makeExtension(deps: ExtensionDeps = {}): Extension {
+  let refresh: () => Promise<void> = () => Promise.resolve();
   return {
-    poller: () => poller,
-    hub: () => hub,
+    refreshStatus: () => refresh(),
     activate(given) {
-      api = given;
-      hub = createHub(() => api, deps);
+      let api: typeof given | null = given;
+      const { every, ...toolDeps } = deps;
       // Absent on an older prifly: optional, like every part added after the first version.
-      given.tools?.register(
-        outlookTools(() => api, deps.wait === undefined ? {} : { wait: deps.wait }),
-      );
-      poller = startPoller(hub);
+      given.tools?.register(outlookTools(() => api, toolDeps));
+      const status = startStatus(given, {
+        ...(every === undefined ? {} : { every }),
+        ...(deps.wait === undefined ? {} : { wait: deps.wait }),
+      });
+      refresh = status.refresh;
+      // A changed account setting shows the new account at once, not 15 minutes later.
+      given.onSettings?.(() => void status.refresh());
       given.log("activated");
       return () => {
-        poller?.stop();
-        poller = null;
-        hub = null;
+        status.stop();
+        refresh = () => Promise.resolve();
         api = null;
       };
     },
-    choices: async (launchId, query) => (hub === null ? nothing : choices(hub, launchId, query)),
-    open: async (launchId, key): Promise<LaunchItem> =>
-      hub === null
-        ? { title: "Outlook", markdown: stopped.message ?? "" }
-        : open(hub, launchId, key),
-    launch: async (launchId, key, input) =>
-      hub === null ? stopped : launch(hub, launchId, key, input),
-    launched: async (launchId, key, sessionId) => {
-      if (hub !== null) await launched(hub, launchId, key, sessionId);
-    },
-    // The board offers no card or chip actions in v1: nothing marks, flags or sends.
-    action: () => undefined,
   };
 }

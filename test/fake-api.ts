@@ -11,7 +11,7 @@
  */
 
 import type {
-  Decoration,
+  ConfirmSpec,
   ExtensionApi,
   ExtensionConnection,
   ExtensionConnectionsApi,
@@ -19,7 +19,6 @@ import type {
   ExtensionNeedsSignIn,
   ExtensionPickAnswer,
   ExtensionTool,
-  LauncherFlag,
   SettingValues,
 } from "@prifly/extension-api";
 
@@ -164,8 +163,14 @@ export type FakeApi = {
     args: Record<string, unknown>,
     pick?: ExtensionPickAnswer,
   ) => Promise<string>;
-  shown: { bySession: Record<string, Decoration[]>; statusBar: Decoration[] }[];
-  flags: Map<string, LauncherFlag | null>;
+  /** Every confirm card the extension showed, in order. */
+  confirms: ConfirmSpec[];
+  /** What the next confirm card answers: true is Confirm, false is Cancel. */
+  answer: { confirm: boolean };
+  /** Every `api.status` line, in order. */
+  statuses: string[];
+  /** The launcher-era UI calls (`show`, `flag`, `snoozeOptions`) the extension made; it should make none. */
+  ui: string[];
   notices: { text: string; tone: string | undefined; session: string | undefined }[];
   logs: { event: string; fields: Record<string, unknown> | undefined }[];
 };
@@ -180,13 +185,20 @@ export function fakeApi(
 ): FakeApi {
   let tools: ExtensionTool[] = [];
   const fake: Omit<FakeApi, "api" | "tools" | "callTool"> = {
-    shown: [],
-    flags: new Map(),
+    confirms: [],
+    answer: { confirm: true },
+    statuses: [],
+    ui: [],
     notices: [],
     logs: [],
   };
   const api: ExtensionApi = {
-    features: ["settings", "start-session", "session-lookup"],
+    features: ["settings", "start-session", "session-lookup", "confirm", "status"],
+    confirm: async (spec) => {
+      fake.confirms.push(spec);
+      return fake.answer.confirm;
+    },
+    status: (text) => void fake.statuses.push(text),
     ...(options.settings === undefined ? {} : { settings: options.settings }),
     ...(options.connections === undefined ? {} : { connections: options.connections }),
     tools: {
@@ -194,9 +206,9 @@ export function fakeApi(
         tools = given;
       },
     },
-    show: (bySession, statusBar) => void fake.shown.push({ bySession, statusBar }),
-    snoozeOptions: () => undefined,
-    flag: (launchId, flag) => void fake.flags.set(launchId, flag),
+    show: () => void fake.ui.push("show"),
+    snoozeOptions: () => void fake.ui.push("snoozeOptions"),
+    flag: () => void fake.ui.push("flag"),
     notify: (text, notifyOptions) =>
       void fake.notices.push({ text, tone: notifyOptions?.tone, session: notifyOptions?.session }),
     machines: { report: () => undefined },

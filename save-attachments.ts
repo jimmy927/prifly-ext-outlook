@@ -84,27 +84,12 @@ export async function saveAttachments(
   mail: Mail,
   counter: { next: number },
 ): Promise<string[]> {
-  return (await saveAttachmentFiles(graph, account, dir, mail, counter)).lines;
-}
-
-/** A file that was written to disk. */
-export type SavedFile = { path: string; name: string; contentType: string; size: number };
-
-/** `saveAttachments`, also saying which files landed on disk (the board's launch reads the pictures). */
-export async function saveAttachmentFiles(
-  graph: GraphContext,
-  account: string,
-  dir: string,
-  mail: Mail,
-  counter: { next: number },
-): Promise<{ lines: string[]; saved: SavedFile[] }> {
   const lines: string[] = [];
-  const saved: SavedFile[] = [];
-  if (!mail.hasAttachments) return { lines, saved };
+  if (!mail.hasAttachments) return lines;
   const listed = await attachments(graph, mail.id);
   if (!listed.ok) {
     lines.push(`- attachments could not be listed: ${failureText(listed.failure, account)}`);
-    return { lines, saved };
+    return lines;
   }
   for (const attachment of listed.value) {
     const label = `${attachment.name} (${attachment.contentType || attachment.kind}, ${kb(attachment.size)})`;
@@ -123,9 +108,6 @@ export async function saveAttachmentFiles(
     const path = join(dir, `${counter.next++}-${named}`);
     const failed = await writeOut(dir, path, bytes.value);
     lines.push(`- ${label}: ${failed === null ? `saved to ${path}` : `not saved, ${failed}`}`);
-    if (failed === null) {
-      saved.push({ path, name: named, contentType: attachment.contentType, size: attachment.size });
-    }
   }
-  return { lines, saved };
+  return lines;
 }
