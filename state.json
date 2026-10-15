@@ -1,7 +1,0 @@
-{
-  "account": "",
-  "deltas": {
-    "9ea767ec-3944-4c2e-bbb2-7eeb5f888304": "https://graph.microsoft.com/v1.0/me/mailFolders('inbox')/messages/delta?$deltatoken=7Z7rGf6AX3yA-7CkKr-hFxDWaMRfzXHLiEWy3y3rst4g_P3zc2ZGIL-AOb7uKSi8U074OjqVEe7WCfquA1WSTRbxkYHMDj4BpqPil6E6HflxyfUpbkD4sLTijbtaEaMbApRCjJ5tJbBt1S7gu67hUIKVvTtcULEstT2vDAaAZMlMnbFVelV5VwJsqCe6VSCQMLcZSTDdNXGvFtihkScQivIL9W9ZD9VCEI8RRCFVO8HuGRstRvACV08ZZB0xP0-NEjtleX56h6QofhOm3Cdn2QKTJtz-A3dVZaAuJex7W2-cNMYQYMFF07iCioE-ZzpfQ2FlUPDXNUTd20nHP2bV0v-7OqCznf_bjYu-SfbxHSS6T1rcWN68MH_iDEp3HB57XlHI_2mt9fyx_gP4NL1Mbw.Z32n2S8S3x6iglhCnpTXNHukOTt2OOjDhP5v3-NCZWw"
-  },
-  "started": {}
-}
