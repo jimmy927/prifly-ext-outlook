@@ -107,7 +107,6 @@ async function sendNew(api: ExtensionApi, args: Record<string, unknown>, deps: T
   const opened = await open(api, args, ["Mail.Send"], deps);
   if (typeof opened === "string") return opened;
   const lines = [
-    `From: ${opened.account}`,
     `To: ${to.join(", ")}`,
     ...(cc.length > 0 ? [`Cc: ${cc.join(", ")}`] : []),
     ...(bcc.length > 0 ? [`Bcc: ${bcc.join(", ")}`] : []),
@@ -118,8 +117,9 @@ async function sendNew(api: ExtensionApi, args: Record<string, unknown>, deps: T
   ];
   const refused = await ask(api, {
     title: "Send an email",
-    summary: `Send "${subject}" to ${[...to, ...cc, ...bcc].join(", ")}`,
-    details: lines.join("\n"),
+    summary: `Send this mail to ${[...to, ...cc, ...bcc].join(", ")}.`,
+    content: lines.join("\n"),
+    details: `POST /me/sendMail as ${opened.account}`,
   });
   if (refused !== null) return refused;
   const sent = await sendMail(opened.ctx, { to, cc, bcc, subject, body, files });
@@ -157,6 +157,17 @@ const TITLE: Record<ReplyKind, string> = {
   reply: "Send a reply",
   replyAll: "Send a reply to all",
   forward: "Forward an email",
+};
+
+const SUMMARY: Record<ReplyKind, string> = {
+  reply: "Send this reply to",
+  replyAll: "Send this reply to",
+  forward: "Forward this mail to",
+};
+const ACTION: Record<ReplyKind, string> = {
+  reply: "createReply",
+  replyAll: "createReplyAll",
+  forward: "createForward",
 };
 
 function sameSet(a: string[], b: string[]): boolean {
@@ -220,7 +231,6 @@ async function answerText(
   if (shown.length === 0) return "Not done: that mail has nobody to reply to.";
   const subject = `${PREFIX[kind]}: ${original.value.subject.replace(/^(re|fw|fwd|aw|sv|vs):\s*/i, "")}`;
   const lines = [
-    `From: ${opened.account}`,
     `To: ${people.to.map(personLabel).join(", ")}`,
     ...(people.cc.length > 0 ? [`Cc: ${people.cc.map(personLabel).join(", ")}`] : []),
     `Subject: ${subject}`,
@@ -232,8 +242,9 @@ async function answerText(
   ];
   const refused = await ask(api, {
     title: TITLE[kind],
-    summary: `Send "${subject}" to ${shown.join(", ")}`,
-    details: lines.join("\n"),
+    summary: `${SUMMARY[kind]} ${shown.join(", ")}.`,
+    content: lines.join("\n"),
+    details: `Answers message id ${id}: POST /me/messages/${id}/${ACTION[kind]}, then POST /me/messages/<draft id>/send, as ${opened.account}`,
   });
   if (refused !== null) return refused;
   return sendAnswer(opened, original.value, { kind, body, files, forwardTo }, shown);

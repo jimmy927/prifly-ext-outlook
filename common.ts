@@ -70,9 +70,19 @@ export function when(iso: string): string {
   return iso.slice(0, 16).replace("T", " ");
 }
 
+/** One line naming a message for a reader: subject, sender and date, no id. */
+export function mailLabel(mail: Mail): string {
+  return `"${mail.subject}" from ${personLabel(mail.from)}, ${when(mail.received)}`;
+}
+
 /** One line naming a message: subject, sender, date and id. */
 export function mailLine(mail: Mail): string {
-  return `"${mail.subject}" from ${personLabel(mail.from)}, ${when(mail.received)} (id ${mail.id})`;
+  return `${mailLabel(mail)} (id ${mail.id})`;
+}
+
+/** A subject for a card's summary: quoted, or "(no subject)". */
+export function quoted(subject: string): string {
+  return subject.trim() === "" ? "(no subject)" : `'${subject}'`;
 }
 
 export type Opened = { ctx: GraphContext; account: string };

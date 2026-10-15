@@ -60,6 +60,21 @@ test("every write shows one confirm card before Graph sees any write, then write
   }
 });
 
+test("every card has a one-sentence summary with no id or URL, a human content, and technical details", async () => {
+  for (const [tool, args] of WRITES) {
+    const { fake, graph } = setup();
+    graph.messages.push({ ...DRAFT });
+    await fake.callTool(tool, args);
+    const card = fake.confirms[0];
+    const label = `${tool} ${JSON.stringify(args)}`;
+    expect(card?.summary, label).toMatch(/\.$/);
+    expect(card?.summary, label).not.toMatch(/\b(m[1-4]|d1|draft1)\b|https?:|\/me\//);
+    expect(card?.summary, label).not.toContain("\n");
+    expect(card?.content?.trim() ?? "", label).not.toBe("");
+    expect(card?.details.trim() ?? "", label).not.toBe("");
+  }
+});
+
 test("a cancelled card makes no write and answers Not done: you cancelled", async () => {
   for (const [tool, args] of WRITES) {
     const { fake, graph } = setup();
@@ -98,12 +113,14 @@ test("outlook_send shows the recipients, subject, body and files, then sends exa
   });
   const card = fake.confirms[0];
   expect(card?.title).toBe("Send an email");
-  expect(card?.summary).toBe('Send "Lunch?" to bob@example.com, dana@example.com');
-  expect(card?.details).toContain("To: bob@example.com");
-  expect(card?.details).toContain("Cc: dana@example.com");
-  expect(card?.details).toContain("Subject: Lunch?");
-  expect(card?.details).toContain("Attachments: note.txt (1 KB)");
-  expect(card?.details).toContain("Noon at the usual place?");
+  expect(card?.summary).toBe("Send this mail to bob@example.com, dana@example.com.");
+  expect(card?.content).toContain("To: bob@example.com");
+  expect(card?.content).toContain("Cc: dana@example.com");
+  expect(card?.content).toContain("Subject: Lunch?");
+  expect(card?.content).toContain("Attachments: note.txt (1 KB)");
+  expect(card?.content).toContain("Noon at the usual place?");
+  expect(card?.details).toContain("POST /me/sendMail");
+  expect(card?.details).not.toContain("Noon at the usual place?");
   expect(answer).toContain('Sent "Lunch?"');
   const sent = graph.sent[0] as Record<string, unknown>;
   expect(JSON.stringify(sent["toRecipients"])).toContain("bob@example.com");
@@ -132,11 +149,11 @@ test("outlook_send refuses a missing file and a file over 3 MB before anything i
 test("outlook_reply_all shows everyone but the reader, and sends the draft Outlook made", async () => {
   const { fake, graph } = setup();
   const answer = await fake.callTool("outlook_reply_all", { id: "m3", body: "Thanks all." });
-  expect(fake.confirms[0]?.summary).toBe(
-    'Send "RE: Partner Center notice" to dana@example.com, bob@example.com',
-  );
-  expect(fake.confirms[0]?.details).toContain("Thanks all.");
-  expect(fake.confirms[0]?.details).not.toContain("To: Ada");
+  expect(fake.confirms[0]?.summary).toBe("Send this reply to dana@example.com, bob@example.com.");
+  expect(fake.confirms[0]?.content).toContain("Subject: RE: Partner Center notice");
+  expect(fake.confirms[0]?.content).toContain("Thanks all.");
+  expect(fake.confirms[0]?.content).not.toContain("To: Ada");
+  expect(fake.confirms[0]?.details).toContain("/me/messages/m3/createReplyAll");
   expect(graph.calls.filter(isWrite).map((call) => call.split("?")[0])).toEqual([
     "POST /me/messages/m3/createReplyAll",
     "POST /me/messages/draft1/send",
@@ -162,8 +179,10 @@ test("outlook_forward adds the files to the draft, then sends it to the given ad
     body: "FYI",
     attachments: [note],
   });
-  expect(fake.confirms[0]?.summary).toBe('Send "FW: Contract for review" to dana@example.com');
-  expect(fake.confirms[0]?.details).toContain("Attachments: note.txt");
+  expect(fake.confirms[0]?.summary).toBe("Forward this mail to dana@example.com.");
+  expect(fake.confirms[0]?.content).toContain("Subject: FW: Contract for review");
+  expect(fake.confirms[0]?.content).toContain("Attachments: note.txt");
+  expect(fake.confirms[0]?.content).toContain("FYI");
   expect(graph.calls.filter(isWrite).map((call) => call.split("?")[0])).toEqual([
     "POST /me/messages/m1/createForward",
     "POST /me/messages/draft1/attachments",
@@ -175,7 +194,13 @@ test("outlook_forward adds the files to the draft, then sends it to the given ad
 test("outlook_move finds a folder by name, and an unknown folder asks nothing", async () => {
   const { fake, graph } = setup();
   const answer = await fake.callTool("outlook_move", { id: "m1", folder: "clients" });
-  expect(fake.confirms[0]?.summary).toBe("Move 1 message to Inbox/Clients");
+  expect(fake.confirms[0]?.summary).toBe("Move 'Contract for review' to Inbox/Clients.");
+  expect(fake.confirms[0]?.content).toContain("Contract for review");
+  expect(fake.confirms[0]?.content).toContain("Bob");
+  expect(fake.confirms[0]?.content).toContain("Moves to Inbox/Clients");
+  expect(fake.confirms[0]?.content).not.toContain("m1");
+  expect(fake.confirms[0]?.details).toContain("m1");
+  expect(fake.confirms[0]?.details).toContain("f-clients");
   expect(answer).toContain("moved to Inbox/Clients");
   expect(graph.bodies.at(-1)?.body).toEqual({ destinationId: "f-clients" });
 
@@ -190,7 +215,9 @@ test("outlook_move finds a folder by name, and an unknown folder asks nothing", 
 test("outlook_delete moves to Deleted Items and says so", async () => {
   const { fake, graph } = setup();
   const answer = await fake.callTool("outlook_delete", { id: "m2" });
-  expect(fake.confirms[0]?.summary).toBe("Move 1 message to Deleted Items");
+  expect(fake.confirms[0]?.summary).toBe("Delete 'RE: Contract for review' to Deleted Items.");
+  expect(fake.confirms[0]?.content).toContain("Moves to Deleted Items");
+  expect(fake.confirms[0]?.details).toContain("m2");
   expect(graph.bodies.at(-1)).toEqual({
     call: "POST /me/messages/m2/move",
     body: { destinationId: "deleteditems" },
@@ -202,15 +229,20 @@ test("outlook_delete moves to Deleted Items and says so", async () => {
 test("categories, flags and read state show the change on the card and PATCH exactly it", async () => {
   const { fake, graph } = setup();
   await fake.callTool("outlook_categories", { id: "m3", categories: ["Red"], mode: "add" });
-  expect(fake.confirms[0]?.details).toContain("categories Partners → Partners, Red");
+  expect(fake.confirms[0]?.summary).toBe("Add categories to 'Partner Center notice': Red.");
+  expect(fake.confirms[0]?.content).toContain("Categories: Partners → Partners, Red");
+  expect(fake.confirms[0]?.details).toContain("m3");
   expect(graph.bodies.at(-1)?.body).toEqual({ categories: ["Partners", "Red"] });
 
   await fake.callTool("outlook_flag", { id: "m3", action: "complete" });
-  expect(fake.confirms[1]?.details).toContain("flag flagged → complete");
+  expect(fake.confirms[1]?.summary).toBe("Mark 'Partner Center notice' as complete.");
+  expect(fake.confirms[1]?.content).toContain("Flag: flagged → complete");
+  expect(fake.confirms[1]?.details).toContain('"flagStatus":"complete"');
   expect(graph.bodies.at(-1)?.body).toEqual({ flag: { flagStatus: "complete" } });
 
   await fake.callTool("outlook_mark_read", { ids: ["m4"], read: true });
-  expect(fake.confirms[2]?.summary).toBe("Mark 1 message as read");
+  expect(fake.confirms[2]?.summary).toBe("Mark 'RE: Partner Center notice' as read.");
+  expect(fake.confirms[2]?.content).toContain("Unread → read");
   expect(graph.bodies.at(-1)?.body).toEqual({ isRead: true });
 });
 
@@ -223,10 +255,29 @@ test("outlook_api shows the method, URL and body on the card", async () => {
     body: { subject: "Lunch" },
   });
   const card = fake.confirms[0];
-  expect(card?.summary).toBe(
-    "POST https://graph.microsoft.com/v1.0/me/events?%24select=id as ada@example.com",
-  );
+  expect(card?.summary).toBe("Create an event.");
+  expect(card?.content).toBe("Create an event in the mailbox of ada@example.com.");
+  expect(card?.details).toContain("POST https://graph.microsoft.com/v1.0/me/events?%24select=id");
   expect(card?.details).toContain('"subject": "Lunch"');
+});
+
+test("outlook_api words a delete, and shows the body when it cannot say what the call does", async () => {
+  const gone = setup();
+  await gone.fake.callTool("outlook_api", { method: "DELETE", path: "/me/messages/m2" });
+  expect(gone.fake.confirms[0]?.summary).toBe("Delete a message.");
+  expect(gone.fake.confirms[0]?.details).toContain("DELETE https://graph.microsoft.com");
+
+  const action = setup();
+  await action.fake.callTool("outlook_api", {
+    method: "POST",
+    path: "/me/messages/m1/move",
+    body: { destinationId: "archive" },
+  });
+  const card = action.fake.confirms[0];
+  expect(card?.summary).toBe("Send a POST request to Microsoft Graph.");
+  expect(card?.summary).not.toContain("http");
+  expect(card?.content).toContain('"destinationId": "archive"');
+  expect(card?.details).toContain("POST https://graph.microsoft.com/v1.0/me/messages/m1/move");
 });
 
 test("a GET through outlook_api runs at once, with no card", async () => {

@@ -7,7 +7,7 @@
  * anything is sent.
  */
 
-import type { ExtensionApi } from "@prifly/extension-api";
+import type { ConfirmSpec, ExtensionApi } from "@prifly/extension-api";
 import { failureText, type Scope } from "./auth";
 import {
   ACCOUNT_PROPERTY,
@@ -86,6 +86,58 @@ export function scopesFor(method: Method, url: URL): Scope[] {
   return method === "GET" ? ["Mail.Read"] : ["Mail.ReadWrite"];
 }
 
+const THINGS: Record<string, string> = {
+  messages: "a message",
+  events: "an event",
+  mailfolders: "a mail folder",
+  childfolders: "a mail folder",
+  contacts: "a contact",
+  contactfolders: "a contact folder",
+  calendars: "a calendar",
+  messagerules: "an inbox rule",
+  attachments: "an attachment",
+  categories: "a category",
+};
+
+const VERBS: Partial<Record<Method, string>> = {
+  POST: "Create",
+  PATCH: "Change",
+  PUT: "Change",
+  DELETE: "Delete",
+};
+
+/**
+ * What a plain create, change or delete call does, in words ("Delete a
+ * message"); null for anything else (an action such as /send, a path this does
+ * not know), which the card then shows as the request body.
+ */
+export function readableLine(method: Method, url: URL): string | null {
+  const parts = url.pathname.split("/").filter((part) => part !== "");
+  const segments = parts.slice(parts[0]?.toLowerCase() === "v1.0" ? 1 : 0);
+  if (segments[0]?.toLowerCase() === "me") segments.shift();
+  const item = segments.length % 2 === 0;
+  if (method === "POST" ? item : !item) return null;
+  const thing = THINGS[(segments.at(item ? -2 : -1) ?? "").toLowerCase()];
+  const verb = VERBS[method];
+  return thing === undefined || verb === undefined ? null : `${verb} ${thing}`;
+}
+
+/** The confirm card for a write: the sentence and body for the reader, the request itself folded. */
+function requestCard(
+  method: Method,
+  url: URL,
+  body: string | undefined,
+  account: string,
+): ConfirmSpec {
+  const line = readableLine(method, url);
+  return {
+    title: "Microsoft Graph request",
+    summary: line === null ? `Send a ${method} request to Microsoft Graph.` : `${line}.`,
+    content: line === null ? (body ?? "No request body.") : `${line} in the mailbox of ${account}.`,
+    details: `${method} ${url.toString()}\n\n${body ?? "(no body)"}`,
+  };
+}
+
 /** The body as it is sent: an object or array as JSON, a string as it is. */
 function bodyText(body: unknown): string | undefined {
   if (body === undefined || body === null) return undefined;
@@ -116,11 +168,7 @@ async function apiText(api: ExtensionApi, args: Record<string, unknown>, deps: T
   const opened = await open(api, args, scopesFor(method, url), deps);
   if (typeof opened === "string") return opened;
   if (method !== "GET") {
-    const refused = await ask(api, {
-      title: "Microsoft Graph request",
-      summary: `${method} ${url.toString()} as ${opened.account}`,
-      details: `${method} ${url.toString()}\n\n${body ?? "(no body)"}`,
-    });
+    const refused = await ask(api, requestCard(method, url, body, opened.account));
     if (refused !== null) return refused;
   }
   const sent = await send(opened.ctx, url.toString(), {

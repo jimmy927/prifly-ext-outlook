@@ -18,6 +18,7 @@ import {
   DATA_NOTE,
   type Opened,
   open,
+  quoted,
   str,
   type ToolDeps,
   type ToolSpec,
@@ -112,8 +113,9 @@ async function replaceDraft(
   if (!current.value.isDraft) return "That id is not a draft; nothing was changed.";
   const refused = await ask(api, {
     title: "Change a draft",
-    summary: `Replace the text of the draft "${current.value.subject}" in Drafts`,
-    details: `Draft: ${current.value.subject} (id ${draftId})\n\nNew text:\n${body}`,
+    summary: `Replace the text of the draft ${quoted(current.value.subject)} in Drafts.`,
+    content: `New text:\n${body}`,
+    details: `PATCH /me/messages/${draftId}`,
   });
   if (refused !== null) return refused;
   const updated = await updateDraft(opened.ctx, draftId, body);
@@ -144,8 +146,9 @@ async function draftText(api: ExtensionApi, args: Record<string, unknown>, deps:
   const all = args["all"] === true;
   const refused = await ask(api, {
     title: "Save a reply draft",
-    summary: `Save a ${all ? "reply-all" : "reply"} to "${original.value.subject}" in Drafts (not sent)`,
-    details: `In reply to: ${personLabel(original.value.from)}, "${original.value.subject}"\n\n${body}`,
+    summary: `Save a ${all ? "reply-all" : "reply"} to ${quoted(original.value.subject)} in Drafts, not sent.`,
+    content: `In reply to: ${personLabel(original.value.from)}, ${quoted(original.value.subject)}\n\n${body}`,
+    details: `POST /me/messages/${id}/${all ? "createReplyAll" : "createReply"}`,
   });
   if (refused !== null) return refused;
   const created = await createDraft(opened.ctx, id, all ? "replyAll" : "reply", body);

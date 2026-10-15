@@ -11,9 +11,11 @@ import {
   ACCOUNT_PROPERTY,
   ask,
   list,
+  mailLabel,
   mailLine,
   type Opened,
   open,
+  quoted,
   str,
   type ToolDeps,
   type ToolSpec,
@@ -26,17 +28,23 @@ const MAX_IDS = 50;
 /** One kind of change, as the card and the answer word it. */
 type Change = {
   title: string;
-  /** "Move 2 messages to Archive". */
-  summary: (count: number) => string;
+  /** One plain sentence: "Move 'Invoice March' to Archive." */
+  summary: (mails: Mail[]) => string;
   /** The change for one message, as the card shows it under the message. */
   detail: (mail: Mail) => string;
+  /** The request behind the change for one message, for the card's folded details. */
+  technical: (mail: Mail) => string;
   apply: (opened: Opened, mail: Mail) => Promise<GraphResult<unknown>>;
   /** What the answer says was done to each. */
   done: string;
 };
 
-function plural(count: number): string {
-  return count === 1 ? "1 message" : `${count} messages`;
+/** "'Invoice March'" for one message, "3 messages" for more. */
+function what(mails: Mail[]): string {
+  const [only] = mails;
+  return only !== undefined && mails.length === 1
+    ? quoted(only.subject)
+    : `${mails.length} messages`;
 }
 
 /** The ids a call names, from `id` and `ids`; or why they will not do. */
@@ -66,10 +74,12 @@ async function changeMessages(
 ): Promise<string> {
   const mails = await readAll(opened, ids);
   if (typeof mails === "string") return mails;
-  const details = mails.map((mail) => `- ${mailLine(mail)}\n  ${change.detail(mail)}`);
+  const content = mails.map((mail) => `- ${mailLabel(mail)}\n  ${change.detail(mail)}`);
+  const details = mails.map((mail) => `${mail.id}\n  ${change.technical(mail)}`);
   const refused = await ask(api, {
     title: change.title,
-    summary: change.summary(mails.length),
+    summary: change.summary(mails),
+    content: content.join("\n"),
     details: details.join("\n"),
   });
   if (refused !== null) return refused;
@@ -134,8 +144,9 @@ async function moveText(api: ExtensionApi, args: Record<string, unknown>, deps: 
   if (typeof folder === "string") return folder;
   return changeMessages(api, opened, ids, {
     title: "Move mail",
-    summary: (n) => `Move ${plural(n)} to ${folder.name}`,
-    detail: () => `→ ${folder.name}`,
+    summary: (mails) => `Move ${what(mails)} to ${folder.name}.`,
+    detail: () => `Moves to ${folder.name}`,
+    technical: () => `POST /me/messages/<id>/move {"destinationId": "${folder.id}"}`,
     apply: (o, mail) => moveMessage(o.ctx, mail.id, folder.id),
     done: `moved to ${folder.name} (its id changes when it moves)`,
   });
@@ -148,8 +159,9 @@ async function deleteText(api: ExtensionApi, args: Record<string, unknown>, deps
   if (typeof opened === "string") return opened;
   return changeMessages(api, opened, ids, {
     title: "Delete mail",
-    summary: (n) => `Move ${plural(n)} to Deleted Items`,
-    detail: () => "→ Deleted Items (it can be restored from there)",
+    summary: (mails) => `Delete ${what(mails)} to Deleted Items.`,
+    detail: () => "Moves to Deleted Items; it can be restored from there",
+    technical: () => 'POST /me/messages/<id>/move {"destinationId": "deleteditems"}',
     apply: (o, mail) => moveMessage(o.ctx, mail.id, "deleteditems"),
     done: "moved to Deleted Items; it is not gone for good and can be restored from there",
   });
@@ -186,9 +198,11 @@ async function categoriesText(api: ExtensionApi, args: Record<string, unknown>, 
   };
   return changeMessages(api, opened, ids, {
     title: "Change categories",
-    summary: (n) => `${verb[mode]} ${plural(n)}: ${shown(given)}`,
+    summary: (mails) => `${verb[mode]} ${what(mails)}: ${shown(given)}.`,
     detail: (mail) =>
-      `categories ${shown(mail.categories)} → ${shown(nextCategories(mail.categories, given, mode))}`,
+      `Categories: ${shown(mail.categories)} → ${shown(nextCategories(mail.categories, given, mode))}`,
+    technical: (mail) =>
+      `PATCH /me/messages/<id> ${JSON.stringify({ categories: nextCategories(mail.categories, given, mode) })}`,
     apply: (o, mail) =>
       patchMessage(o.ctx, mail.id, { categories: nextCategories(mail.categories, given, mode) }),
     done: "categories changed",
@@ -221,12 +235,17 @@ async function flagText(api: ExtensionApi, args: Record<string, unknown>, deps: 
   if (due !== "" && !/^\d{4}-\d{2}-\d{2}$/.test(due)) return "due is a date, YYYY-MM-DD.";
   const opened = await open(api, args, ["Mail.ReadWrite"], deps);
   if (typeof opened === "string") return opened;
-  const label = { flag: "Flag", complete: "Mark as complete", clear: "Clear the flag of" };
+  const label = {
+    flag: (target: string) => `Flag ${target}`,
+    complete: (target: string) => `Mark ${target} as complete`,
+    clear: (target: string) => `Clear the flag of ${target}`,
+  };
   const dueText = action === "flag" && due !== "" ? `, due ${due}` : "";
   return changeMessages(api, opened, ids, {
     title: "Change flags",
-    summary: (n) => `${label[action]} ${plural(n)}${dueText}`,
-    detail: (mail) => `flag ${mail.flag.status} → ${FLAG_STATUS[action]}${dueText}`,
+    summary: (mails) => `${label[action](what(mails))}${dueText}.`,
+    detail: (mail) => `Flag: ${mail.flag.status} → ${FLAG_STATUS[action]}${dueText}`,
+    technical: () => `PATCH /me/messages/<id> ${JSON.stringify(flagPatch(action, due))}`,
     apply: (o, mail) => patchMessage(o.ctx, mail.id, flagPatch(action, due)),
     done: `flag ${FLAG_STATUS[action]}${dueText}`,
   });
@@ -241,8 +260,9 @@ async function markReadText(api: ExtensionApi, args: Record<string, unknown>, de
   const state = read ? "read" : "unread";
   return changeMessages(api, opened, ids, {
     title: `Mark mail as ${state}`,
-    summary: (n) => `Mark ${plural(n)} as ${state}`,
-    detail: (mail) => `${mail.isRead ? "read" : "unread"} → ${state}`,
+    summary: (mails) => `Mark ${what(mails)} as ${state}.`,
+    detail: (mail) => `${mail.isRead ? "Read" : "Unread"} → ${state}`,
+    technical: () => `PATCH /me/messages/<id> ${JSON.stringify({ isRead: read })}`,
     apply: (o, mail) => patchMessage(o.ctx, mail.id, { isRead: read }),
     done: `marked ${state}`,
   });
