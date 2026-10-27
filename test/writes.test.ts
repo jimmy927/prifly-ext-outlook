@@ -2,6 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { NO_SEND } from "../api-tool";
 import { CANCELLED } from "../common";
 import { mail, who } from "./fake-graph";
 import { isWrite, setup } from "./harness";
@@ -292,6 +293,78 @@ test("a GET through outlook_api runs at once, with no card", async () => {
   );
   expect(answer).toContain('"subject": "Contract for review"');
   expect(graph.calls.filter(isWrite)).toEqual([]);
+});
+
+test("outlook_api refuses every call that sends mail, whatever the method, with no card and no request", async () => {
+  const paths = [
+    "/me/sendMail",
+    "me/SENDMAIL",
+    "/v1.0/me/sendMail",
+    "https://graph.microsoft.com/v1.0/me/sendMail",
+    "https://graph.microsoft.com/v1.0/users/bob@example.com/sendMail",
+    "/users/bob@example.com/sendMail",
+    "/v1.0/users/abc-123/messages/m1/send",
+    "/me/messages/m1/send",
+    "/me/messages/m1/Send/",
+    "/me/messages/m1/send?$select=id",
+    "/me/messages/m1/reply",
+    "/me/messages/m1/replyAll",
+    "/me/messages/m1/REPLYALL",
+    "/me/messages/m1/forward",
+    "/me/mailFolders/drafts/messages/d1/send",
+    "https://graph.microsoft.com/beta/me/messages/m1/Forward?x=1",
+    "/me/messages/m1/%73end",
+    "/me/messages/m1/microsoft.graph.send",
+    "/me/messages/m1/send/.",
+    "/me/messages/m1/send/x/..",
+  ];
+  const { fake, connections } = setup({ choose: "send" });
+  for (const path of paths) {
+    for (const method of ["GET", "POST", "PATCH", "PUT", "DELETE"]) {
+      const body = method === "GET" ? undefined : { comment: "hi" };
+      const answer = await fake.callTool("outlook_api", { method, path, body });
+      expect(answer, `${method} ${path}`).toBe(NO_SEND);
+    }
+  }
+  expect(NO_SEND).toBe(
+    "outlook_api does not send mail. Use outlook_send, outlook_reply, outlook_reply_all or outlook_forward: the reader chooses Send or Save as draft on their card.",
+  );
+  expect(connections.requests).toEqual([]);
+  expect(fake.confirms).toEqual([]);
+});
+
+test("outlook_api refuses a $batch that carries a send", async () => {
+  const { fake, connections } = setup();
+  const answer = await fake.callTool("outlook_api", {
+    method: "POST",
+    path: "https://graph.microsoft.com/v1.0/$batch",
+    body: { requests: [{ id: "1", method: "POST", url: "/me/messages/m1/send" }] },
+  });
+  expect(answer).toBe(NO_SEND);
+  expect(connections.requests).toEqual([]);
+  expect(fake.confirms).toEqual([]);
+});
+
+test("outlook_api still makes drafts and changes after the card, and says it never sends", async () => {
+  for (const [method, path, body] of [
+    ["POST", "/me/messages/m1/createReply", { comment: "Thanks" }],
+    ["POST", "/me/messages/m3/createReplyAll", { comment: "Thanks" }],
+    ["POST", "/me/messages/m1/createForward", { comment: "FYI" }],
+    ["PATCH", "/me/messages/m1", { isRead: false }],
+    ["POST", "/me/messages", { subject: "Draft" }],
+  ] as const) {
+    const { fake, graph } = setup({ choose: "send" });
+    const answer = await fake.callTool("outlook_api", { method, path, body });
+    expect(answer, path).toStartWith(
+      `${method} https://graph.microsoft.com/v1.0${path} answered 20`,
+    );
+    expect(fake.confirms.length, path).toBe(1);
+    expect(graph.sent, path).toEqual([]);
+  }
+  const { fake } = setup();
+  const tool = fake.tools().find((each) => each.name === "outlook_api");
+  expect(tool?.description).toContain("It never sends mail");
+  expect(tool?.description).toContain("where the reader chooses Send or Save as draft");
 });
 
 test("outlook_api refuses any host but graph.microsoft.com, and paths outside /me, before any request", async () => {

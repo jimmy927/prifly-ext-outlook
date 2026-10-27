@@ -26,6 +26,8 @@ export type Mail = {
   from: Person;
   to: Person[];
   cc: Person[];
+  /** Blind copies: only a draft or a sent mail has them; empty when not selected. */
+  bcc: Person[];
   /** Where a reply goes instead of `from`, when the sender set it; empty when not selected. */
   replyTo: Person[];
   /** ISO time the mail arrived. */
@@ -70,6 +72,11 @@ export function personLabel(person: Person): string {
   return person.address === "" ? person.name : `${person.name} <${person.address}>`;
 }
 
+/** The addresses of people, lower-cased, for comparing recipient lists. */
+export function addresses(people: Person[]): string[] {
+  return people.map((person) => person.address.toLowerCase()).filter((a) => a !== "");
+}
+
 export function toMail(raw: unknown): Mail {
   const r = record(raw);
   const flag = record(r["flag"]);
@@ -81,6 +88,7 @@ export function toMail(raw: unknown): Mail {
     from: toPerson(r["from"]),
     to: toPeople(r["toRecipients"]),
     cc: toPeople(r["ccRecipients"]),
+    bcc: toPeople(r["bccRecipients"]),
     replyTo: toPeople(r["replyTo"]),
     received: text(r["receivedDateTime"]),
     isRead: r["isRead"] === true,

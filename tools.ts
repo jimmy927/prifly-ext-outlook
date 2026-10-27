@@ -1,7 +1,8 @@
 /**
  * The MCP tools every session sees as `mcp__prifly__outlook_*`. Reads run at
- * once; every write shows the reader a confirm card first (`ask`) and makes
- * no write call when they cancel. This file holds the reads and the draft,
+ * once; every write shows the reader a card first (`ask`, or for a mail
+ * `askMail`, where the reader chooses draft or send) and makes no write call
+ * when they cancel. This file holds the reads and the draft reply,
  * and puts every tool together; the writes live in compose.ts (send, reply,
  * forward) and changes.ts (move, flag, categories, read state, delete), the
  * generic Graph call in api-tool.ts and the reference reader in docs.ts.
@@ -14,20 +15,46 @@ import { changeTools } from "./changes";
 import {
   ACCOUNT_PROPERTY,
   ask,
+  askMail,
+  type CardMail,
+  canChooseMail,
+  choiceSummary,
   clamp,
   DATA_NOTE,
+  inDrafts,
+  type MailCard,
   type Opened,
   open,
+  personName,
   quoted,
   str,
   type ToolDeps,
   type ToolSpec,
+  told,
   when,
 } from "./common";
-import { composeTools } from "./compose";
+import {
+  answerCard,
+  composeTools,
+  mailScopes,
+  planAnswer,
+  READER_DECIDES,
+  writeAnswer,
+} from "./compose";
 import { docsTool } from "./docs";
-import { conversation, createDraft, folders, inbox, message, search, updateDraft } from "./graph";
-import { type Mail, oldestFirst, personLabel } from "./model";
+import {
+  attachments,
+  conversation,
+  createDraft,
+  folders,
+  inbox,
+  message,
+  type ReplyKind,
+  search,
+  sendDraft,
+  updateDraft,
+} from "./graph";
+import { addresses, type Mail, oldestFirst, type Person, personLabel } from "./model";
 import { attachmentDir, saveAttachments } from "./save-attachments";
 
 export type { ToolDeps } from "./common";
@@ -101,6 +128,41 @@ async function foldersText(api: ExtensionApi, args: Record<string, unknown>, dep
   return ["folder | unread | total | id", ...rows].join("\n");
 }
 
+/** The files already on a draft, as the two-way card lists them; none when prifly has no such card. */
+async function draftFiles(api: ExtensionApi, opened: Opened, draft: Mail) {
+  if (!draft.hasAttachments || !canChooseMail(api)) return [];
+  const found = await attachments(opened.ctx, draft.id);
+  return found.ok
+    ? found.value.map((each) => ({
+        filename: each.name,
+        mimeType: each.contentType,
+        size: each.size,
+      }))
+    : [];
+}
+
+/** The two-way card for a draft whose text is replaced: the draft as it will be. */
+function rewriteCard(draft: Mail, body: string, files: CardMail["attachments"]): MailCard {
+  const label = (people: Person[]) => people.map(personLabel).join(", ");
+  return {
+    title: "Reply",
+    summary: choiceSummary(
+      draft.subject,
+      [...draft.to, ...draft.cc, ...draft.bcc].map(personName),
+      files?.length ?? 0,
+    ),
+    details: `PATCH /me/messages/${draft.id}, then for Send now POST /me/messages/${draft.id}/send`,
+    mail: {
+      to: label(draft.to),
+      ...(draft.cc.length > 0 ? { cc: label(draft.cc) } : {}),
+      ...(draft.bcc.length > 0 ? { bcc: label(draft.bcc) } : {}),
+      subject: draft.subject,
+      text: body,
+      ...(files === undefined || files.length === 0 ? {} : { attachments: files }),
+    },
+  };
+}
+
 /** Refuses to overwrite anything that is not a draft: a received mail's body is not ours to change. */
 async function replaceDraft(
   api: ExtensionApi,
@@ -111,16 +173,35 @@ async function replaceDraft(
   const current = await message(opened.ctx, draftId);
   if (!current.ok) return failureText(current.failure, opened.account);
   if (!current.value.isDraft) return "That id is not a draft; nothing was changed.";
-  const refused = await ask(api, {
-    title: "Change a draft",
-    summary: `Replace the text of the draft ${quoted(current.value.subject)} in Drafts.`,
-    content: `New text:\n${body}`,
-    details: `PATCH /me/messages/${draftId}`,
-  });
-  if (refused !== null) return refused;
+  const choice = await askMail(
+    api,
+    {
+      title: "Change a draft",
+      summary: `Replace the text of the draft ${quoted(current.value.subject)} in Drafts.`,
+      content: `New text:\n${body}`,
+      details: `PATCH /me/messages/${draftId}`,
+    },
+    "draft",
+    rewriteCard(current.value, body, await draftFiles(api, opened, current.value)),
+  );
+  if (typeof choice === "string") return choice;
   const updated = await updateDraft(opened.ctx, draftId, body);
   if (!updated.ok) return failureText(updated.failure, opened.account);
-  return draftSaved("Draft updated", updated.value);
+  const draft = updated.value;
+  const everyone = addresses([...draft.to, ...draft.cc, ...draft.bcc]);
+  if (choice.kind === "draft") {
+    return choice.chosen
+      ? told(choice, inDrafts(draft, everyone))
+      : draftSaved("Draft updated", draft);
+  }
+  const sent = await sendDraft(opened.ctx, draftId);
+  if (!sent.ok) {
+    return `Not sent: ${failureText(sent.failure, opened.account)} The draft is in Drafts (id ${draftId}) with the new text.`;
+  }
+  return told(
+    choice,
+    `Sent "${draft.subject}" to ${everyone.join(", ")} from ${opened.account}. A copy is in Sent Items.`,
+  );
 }
 
 function draftSaved(what: string, draft: Mail): string {
@@ -138,12 +219,13 @@ async function draftText(api: ExtensionApi, args: Record<string, unknown>, deps:
   if (body.trim() === "" || (id === "" && replace === "")) {
     return "Give the id of the message to answer and the text of the reply.";
   }
-  const opened = await open(api, args, ["Mail.ReadWrite"], deps);
+  const opened = await open(api, args, mailScopes(api, ["Mail.ReadWrite"]), deps);
   if (typeof opened === "string") return opened;
   if (replace !== "") return replaceDraft(api, opened, replace, body);
   const original = await message(opened.ctx, id);
   if (!original.ok) return failureText(original.failure, opened.account);
   const all = args["all"] === true;
+  if (canChooseMail(api)) return chosenReply(api, opened, original.value, all, body);
   const refused = await ask(api, {
     title: "Save a reply draft",
     summary: `Save a ${all ? "reply-all" : "reply"} to ${quoted(original.value.subject)} in Drafts, not sent.`,
@@ -154,6 +236,33 @@ async function draftText(api: ExtensionApi, args: Record<string, unknown>, deps:
   const created = await createDraft(opened.ctx, id, all ? "replyAll" : "reply", body);
   if (!created.ok) return failureText(created.failure, opened.account);
   return draftSaved("Reply draft saved", created.value);
+}
+
+/**
+ * A reply draft on prifly's two-way card: the reader chooses Save as draft
+ * or Send now, and it is written as outlook_reply writes it, sent only on
+ * their Send.
+ */
+async function chosenReply(
+  api: ExtensionApi,
+  opened: Opened,
+  original: Mail,
+  all: boolean,
+  body: string,
+): Promise<string> {
+  const kind: ReplyKind = all ? "replyAll" : "reply";
+  const answer = planAnswer(original, { kind, body, files: [], forwardTo: [] }, opened.account);
+  if (typeof answer === "string") return answer;
+  const card = answerCard(answer, opened.account);
+  // Without "choose-mail" this spec would be a confirm card; askMail is only reached with it.
+  const choice = await askMail(
+    api,
+    { title: card.title, summary: card.summary, details: card.details },
+    "draft",
+    card,
+  );
+  if (typeof choice === "string") return choice;
+  return writeAnswer(opened, answer, choice);
 }
 
 const readTools: ToolSpec[] = [
@@ -205,8 +314,8 @@ const readTools: ToolSpec[] = [
   {
     name: "outlook_draft_reply",
     description:
-      "Save a reply to an Outlook mail as a draft in Drafts, threaded under it, after the reader confirms on a card. " +
-      "It does not send: use outlook_reply to send a reply. To change a draft made earlier, pass its id as replace_draft_id.",
+      "Proposes a reply to an Outlook mail, threaded under it, to keep in Drafts. To change a draft made earlier, pass its id as replace_draft_id. " +
+      READER_DECIDES,
     inputSchema: {
       type: "object",
       properties: {

@@ -9,8 +9,8 @@
  * - a `conversationId` filter combined with `$orderby` is refused as an
  *   inefficient filter, so a conversation is sorted here too.
  *
- * The writes (send, reply, forward, move, PATCH) are plain functions here;
- * the tools ask the reader with `api.confirm` before they call any of them.
+ * The writes (send, save, reply, forward, move, PATCH) are plain functions
+ * here; the tools ask the reader on a card before they call any of them.
  */
 
 import type { ExtensionConnectionsApi } from "@prifly/extension-api";
@@ -20,7 +20,6 @@ import {
   type Mail,
   newestFirst,
   oldestFirst,
-  type Person,
   record,
   text,
   toAttachment,
@@ -38,7 +37,7 @@ const BODY_PREFER = 'outlook.body-content-type="text"';
 const LIST_SELECT =
   "id,conversationId,subject,from,toRecipients,receivedDateTime,isRead,isDraft,hasAttachments," +
   "bodyPreview,webLink,flag,categories";
-const FULL_SELECT = `${LIST_SELECT},ccRecipients,replyTo,body`;
+const FULL_SELECT = `${LIST_SELECT},ccRecipients,bccRecipients,replyTo,body`;
 
 export type Wait = (ms: number) => Promise<void>;
 
@@ -410,19 +409,25 @@ export type NewMail = {
   files: OutgoingFile[];
 };
 
+const messageJson = (mail: NewMail): Json => ({
+  subject: mail.subject,
+  body: { contentType: "Text", content: mail.body },
+  toRecipients: mail.to.map(recipient),
+  ccRecipients: mail.cc.map(recipient),
+  bccRecipients: mail.bcc.map(recipient),
+  attachments: mail.files.map(fileAttachment),
+});
+
 /** Sends a new mail at once (`sendMail`), saved to Sent Items. */
 export function sendMail(ctx: GraphContext, mail: NewMail): Promise<GraphResult<null>> {
-  return sendNoContent(ctx, "/me/sendMail", {
-    message: {
-      subject: mail.subject,
-      body: { contentType: "Text", content: mail.body },
-      toRecipients: mail.to.map(recipient),
-      ccRecipients: mail.cc.map(recipient),
-      bccRecipients: mail.bcc.map(recipient),
-      attachments: mail.files.map(fileAttachment),
-    },
-    saveToSentItems: true,
-  });
+  return sendNoContent(ctx, "/me/sendMail", { message: messageJson(mail), saveToSentItems: true });
+}
+
+/** Saves a new mail in Drafts (`POST /me/messages`); nothing is sent. */
+export async function saveMail(ctx: GraphContext, mail: NewMail): Promise<GraphResult<Mail>> {
+  const body = JSON.stringify(messageJson(mail));
+  const answer = await sendJson(ctx, "/me/messages", { method: "POST", body });
+  return answer.ok ? good(toMail(answer.value)) : answer;
 }
 
 export type ReplyKind = "reply" | "replyAll" | "forward";
@@ -503,9 +508,4 @@ export function updateDraft(
   body: string,
 ): Promise<GraphResult<Mail>> {
   return patchMessage(ctx, draftId, { body: { contentType: "text", content: body } });
-}
-
-/** The addresses of people, lower-cased, for comparing recipient lists. */
-export function addresses(people: Person[]): string[] {
-  return people.map((person) => person.address.toLowerCase()).filter((a) => a !== "");
 }

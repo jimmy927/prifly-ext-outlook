@@ -46,11 +46,12 @@ test("every file that calls a Graph write also asks the reader first", async () 
   const writers = ["compose.ts", "changes.ts", "api-tool.ts", "tools.ts"];
   for (const { file, source } of await sources()) {
     const writes =
-      /\b(sendMail|createDraft|sendDraft|addAttachment|moveMessage|patchMessage|updateDraft)\(|method(,|:\s*["'](POST|PATCH|PUT|DELETE))/.test(
+      /\b(sendMail|saveMail|createDraft|sendDraft|addAttachment|moveMessage|patchMessage|updateDraft)\(|method(,|:\s*["'](POST|PATCH|PUT|DELETE))/.test(
         source,
       );
     if (file === "graph.ts" || !writes) continue;
     expect(writers, file).toContain(file);
-    expect(source, file).toContain("await ask(api,");
+    // A plain confirm card, or for a mail the card where the reader picks draft or send.
+    expect(source, file).toMatch(/await (ask|askMail)\(\s*api,/);
   }
 });

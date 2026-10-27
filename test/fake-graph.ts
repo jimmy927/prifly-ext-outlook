@@ -4,8 +4,8 @@
  * It keeps to the rules the real Graph enforces on the calls graph.ts makes —
  * `$orderby` leading `$filter`, no `$filter`/`$orderby` with `$search`, no
  * `$orderby` with a `conversationId` filter — so a call that breaks them
- * fails here too. It answers the writes the tools make (sendMail, createReply,
- * createReplyAll, createForward, attachments, send, move, PATCH), keeping what
+ * fails here too. It answers the writes the tools make (sendMail, a new draft,
+ * createReply, createReplyAll, createForward, attachments, send, move, PATCH), keeping what
  * was sent in `sent`, and can answer 429 with `Retry-After` and a 401 claims
  * challenge.
  */
@@ -252,6 +252,17 @@ type Person = { emailAddress: { address: string } };
 const addressOf = (entry: unknown) => (entry as Person).emailAddress.address;
 const notAda = (entry: unknown) => addressOf(entry) !== ADA.address;
 
+/** A new mail as Graph saves it in Drafts from `POST /me/messages`, the `n`th draft made. */
+const savedDraft = (json: Entry, n: number): Entry =>
+  mail({
+    ...json,
+    id: `draft${n}`,
+    conversationId: `conv-draft${n}`,
+    isDraft: true,
+    from: who(ADA),
+    receivedDateTime: "2026-10-11T10:00:00Z",
+  });
+
 /** A fake Graph over `mailbox()`; change `fault` and `messages` between calls. */
 export function fakeGraph(): FakeGraph {
   let draftCount = 0;
@@ -309,6 +320,11 @@ export function fakeGraph(): FakeGraph {
     "POST /me/sendMail": (_url, json) => {
       graph.sent.push(json["message"] as Entry);
       return new Response(null, { status: 202 });
+    },
+    "POST /me/messages": (_url, json) => {
+      const draft = savedDraft(json, ++draftCount);
+      graph.messages.push(draft);
+      return Response.json(draft, { status: 201 });
     },
     "GET /me/mailFolders/inbox/messages": (url) =>
       Response.json({ value: select(graph.messages, url) }),

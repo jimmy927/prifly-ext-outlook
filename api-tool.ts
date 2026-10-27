@@ -2,7 +2,9 @@
  * `outlook_api`: any Microsoft Graph call with the reader's Microsoft
  * connection, for what the curated tools do not cover (calendar events,
  * rules, folders, mailbox settings…). A GET runs at once; any other method
- * shows the exact request on a confirm card first. Only
+ * shows the exact request on a confirm card first. It never sends mail: a
+ * send action is refused without a card, so mail only goes out from the
+ * reader's Send on a mail card. Only
  * https://graph.microsoft.com is reached: another host is refused before
  * anything is sent.
  */
@@ -81,9 +83,56 @@ export function scopesFor(method: Method, url: URL): Scope[] {
   ) {
     return ["Calendars.ReadWrite"];
   }
-  if (/\/(sendmail|send|reply|replyall|forward)$/.test(path))
-    return ["Mail.ReadWrite", "Mail.Send"];
   return method === "GET" ? ["Mail.Read"] : ["Mail.ReadWrite"];
+}
+
+export const NO_SEND =
+  "outlook_api does not send mail. Use outlook_send, outlook_reply, outlook_reply_all or outlook_forward: the reader chooses Send or Save as draft on their card.";
+
+/**
+ * Graph's actions that send mail at once: `sendMail`, a draft's `send`, and
+ * `reply` / `replyAll` / `forward` (unlike `createReply` and the like, which
+ * only make a draft).
+ */
+const SEND_ACTIONS = new Set(["sendmail", "send", "reply", "replyall", "forward"]);
+
+/**
+ * Whether a path or URL, as a session wrote it, calls one of Graph's send
+ * actions: its last segment, whatever its case, its query, a trailing slash,
+ * percent-escapes or a `microsoft.graph.` namespace. Whatever the method,
+ * outlook_api never makes such a call, so mail only goes out from the
+ * reader's Send on a mail card.
+ */
+export function isSendPath(given: string): boolean {
+  const path = given.trim().split(/[?#]/)[0] ?? "";
+  let decoded = path;
+  try {
+    decoded = decodeURIComponent(path);
+  } catch {
+    // A broken escape: judged as written.
+  }
+  const segments = decoded.split("/").filter((part) => part.trim() !== "" && part !== ".");
+  const last = (segments.at(-1) ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/^microsoft\.graph\./, "");
+  return SEND_ACTIONS.has(last);
+}
+
+/** Whether a `$batch` body holds a request that sends mail. */
+function batchSends(url: URL, body: string | undefined): boolean {
+  if (!url.pathname.toLowerCase().endsWith("/$batch") || body === undefined) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return false;
+  }
+  const requests = record(parsed)["requests"];
+  return (
+    Array.isArray(requests) &&
+    requests.some((each) => isSendPath(String(record(each)["url"] ?? "")))
+  );
 }
 
 const THINGS: Record<string, string> = {
@@ -108,7 +157,7 @@ const VERBS: Partial<Record<Method, string>> = {
 
 /**
  * What a plain create, change or delete call does, in words ("Delete a
- * message"); null for anything else (an action such as /send, a path this does
+ * message"); null for anything else (an action such as /move, a path this does
  * not know), which the card then shows as the request body.
  */
 export function readableLine(method: Method, url: URL): string | null {
@@ -161,9 +210,12 @@ async function answerText(response: Response): Promise<string> {
 async function apiText(api: ExtensionApi, args: Record<string, unknown>, deps: ToolDeps) {
   const method = (str(args["method"]) || "GET").toUpperCase() as Method;
   if (!METHODS.includes(method)) return `Not done: method is one of ${METHODS.join(", ")}.`;
+  if (isSendPath(str(args["path"]))) return NO_SEND;
   const url = graphUrl(str(args["path"]), args["query"]);
   if (typeof url === "string") return url;
   const body = bodyText(args["body"]);
+  // As Graph will read it (`..` resolved), and every request a batch carries.
+  if (isSendPath(url.pathname) || batchSends(url, body)) return NO_SEND;
   if (method === "GET" && body !== undefined) return "Not done: a GET takes no body.";
   const opened = await open(api, args, scopesFor(method, url), deps);
   if (typeof opened === "string") return opened;
@@ -188,7 +240,9 @@ export const apiTools: ToolSpec[] = [
       "Call any Microsoft Graph v1.0 endpoint with the reader's Microsoft account: mail, folders, rules, mailbox settings, " +
       "calendars and events (/me/events, /me/calendarView). path is under /me (/me/messages?$top=5) or a full " +
       "https://graph.microsoft.com URL; no other host. A GET runs at once; POST, PATCH, PUT and DELETE show the reader " +
-      "the request on a confirm card first. Look an endpoint up with outlook_api_docs before a write you have not made before.",
+      "the request on a confirm card first. Look an endpoint up with outlook_api_docs before a write you have not made before. " +
+      "It never sends mail: a sendMail, send, reply, replyAll or forward call is refused without a card. To send, propose the mail " +
+      "with outlook_send, outlook_reply, outlook_reply_all or outlook_forward, where the reader chooses Send or Save as draft.",
     inputSchema: {
       type: "object",
       properties: {
