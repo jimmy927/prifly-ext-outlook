@@ -104,6 +104,16 @@ const SEND_ACTIONS = new Set(["sendmail", "send", "reply", "replyall", "forward"
  * reader's Send on a mail card.
  */
 export function isSendPath(given: string): boolean {
+  const last = (pathSegments(given).at(-1) ?? "").toLowerCase().replace(/^microsoft\.graph\./, "");
+  return SEND_ACTIONS.has(last);
+}
+
+/**
+ * A path's segments as Graph reads them: query and fragment dropped,
+ * percent-escapes decoded, empty segments and `.` skipped, and `..` taking
+ * the segment before it away.
+ */
+function pathSegments(given: string): string[] {
   const path = given.trim().split(/[?#]/)[0] ?? "";
   let decoded = path;
   try {
@@ -111,27 +121,34 @@ export function isSendPath(given: string): boolean {
   } catch {
     // A broken escape: judged as written.
   }
-  const segments = decoded.split("/").filter((part) => part.trim() !== "" && part !== ".");
-  const last = (segments.at(-1) ?? "")
-    .trim()
-    .toLowerCase()
-    .replace(/^microsoft\.graph\./, "");
-  return SEND_ACTIONS.has(last);
+  const segments: string[] = [];
+  for (const raw of decoded.split("/")) {
+    const part = raw.trim();
+    if (part === "" || part === ".") continue;
+    if (part === "..") segments.pop();
+    else segments.push(part);
+  }
+  return segments;
+}
+
+/** A field of a JSON object under any casing of its name, as a batch's `requests` and `url`. */
+function field(value: unknown, name: string): unknown {
+  return Object.entries(record(value)).find(([key]) => key.toLowerCase() === name)?.[1];
 }
 
 /** Whether a `$batch` body holds a request that sends mail. */
 function batchSends(url: URL, body: string | undefined): boolean {
-  if (!url.pathname.toLowerCase().endsWith("/$batch") || body === undefined) return false;
+  const isBatch = (pathSegments(url.pathname).at(-1) ?? "").toLowerCase() === "$batch";
+  if (!isBatch || body === undefined) return false;
   let parsed: unknown;
   try {
     parsed = JSON.parse(body);
   } catch {
     return false;
   }
-  const requests = record(parsed)["requests"];
+  const requests = field(parsed, "requests");
   return (
-    Array.isArray(requests) &&
-    requests.some((each) => isSendPath(String(record(each)["url"] ?? "")))
+    Array.isArray(requests) && requests.some((each) => isSendPath(String(field(each, "url") ?? "")))
   );
 }
 

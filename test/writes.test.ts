@@ -2,7 +2,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { NO_SEND } from "../api-tool";
+import { isSendPath, NO_SEND } from "../api-tool";
 import { CANCELLED } from "../common";
 import { mail, who } from "./fake-graph";
 import { isWrite, setup } from "./harness";
@@ -334,15 +334,43 @@ test("outlook_api refuses every call that sends mail, whatever the method, with 
 });
 
 test("outlook_api refuses a $batch that carries a send", async () => {
-  const { fake, connections } = setup();
-  const answer = await fake.callTool("outlook_api", {
+  const batches: [string, Record<string, unknown>][] = [
+    ["https://graph.microsoft.com/v1.0/$batch", { url: "/me/messages/m1/send" }],
+    ["https://graph.microsoft.com/v1.0/$batch", { url: "/me/messages/m1/send/x/.." }],
+    ["https://graph.microsoft.com/v1.0/$batch", { url: "/me/messages/m1/send/x/%2e%2e" }],
+    ["https://graph.microsoft.com/v1.0/$batch", { Url: "/me/sendMail" }],
+    ["https://graph.microsoft.com/v1.0/$batch", { URL: "/me/messages/m1/forward" }],
+    ["https://graph.microsoft.com/v1.0/$batch/", { url: "/me/messages/m1/send" }],
+    ["https://graph.microsoft.com/v1.0/%24batch", { url: "/me/messages/m1/reply" }],
+  ];
+  for (const [path, request] of batches) {
+    const { fake, connections } = setup();
+    const answer = await fake.callTool("outlook_api", {
+      method: "POST",
+      path,
+      body: { requests: [{ id: "1", method: "POST", ...request }] },
+    });
+    const label = `${path} ${JSON.stringify(request)}`;
+    expect(answer, label).toBe(NO_SEND);
+    expect(connections.requests, label).toEqual([]);
+    expect(fake.confirms, label).toEqual([]);
+  }
+  const keyed = setup();
+  const answer = await keyed.fake.callTool("outlook_api", {
     method: "POST",
     path: "https://graph.microsoft.com/v1.0/$batch",
-    body: { requests: [{ id: "1", method: "POST", url: "/me/messages/m1/send" }] },
+    body: { Requests: [{ id: "1", method: "POST", url: "/me/messages/m1/send" }] },
   });
   expect(answer).toBe(NO_SEND);
-  expect(connections.requests).toEqual([]);
-  expect(fake.confirms).toEqual([]);
+});
+
+test("isSendPath judges a path as Graph reads it, dot segments resolved", () => {
+  expect(isSendPath("/me/messages/m1/send/x/..")).toBe(true);
+  expect(isSendPath("/me/messages/m1/send/.")).toBe(true);
+  expect(isSendPath("/me/messages/m1/send/%2E%2E")).toBe(false);
+  expect(isSendPath("/me/messages/m1/x/../send")).toBe(true);
+  expect(isSendPath("/me/messages/m1/send/..")).toBe(false);
+  expect(isSendPath("/me/messages/m1/createReply")).toBe(false);
 });
 
 test("outlook_api still makes drafts and changes after the card, and says it never sends", async () => {
