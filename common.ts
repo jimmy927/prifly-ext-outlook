@@ -151,7 +151,8 @@ export type MailChoice = { kind: MailKind; chosen: boolean; edited?: MailEdit };
 /**
  * The two-way card's own title, summary, details and mail. `note` is a last
  * paragraph of `mail.text` that is not the reader's text (a reply's line about
- * the quoted mail): taken off again from what they edit.
+ * the quoted mail): taken off again from what they edit, but only while it
+ * is left as it was; a line they changed stays in the text.
  */
 export type MailCard = {
   title: string;

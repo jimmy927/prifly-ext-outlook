@@ -311,27 +311,41 @@ function savedAnswer(draft: Mail, actual: string[], shown: string[], choice: Mai
   return told(choice, `${inDrafts(draft, actual)}${differs}`);
 }
 
-/** Puts the reader's edited subject on a draft and adds the files; why one failed, or null. */
+/**
+ * Puts the reader's edited subject on a draft and adds the files; null when
+ * both worked, else why one failed and whether the subject is still the
+ * reader's (it is not when the PATCH itself failed).
+ */
 async function finishDraft(
   { ctx, account }: Opened,
   draftId: string,
   files: OutgoingFile[],
   edited: MailChoice["edited"],
   left: string,
-): Promise<string | null> {
+): Promise<{ why: string; renamed: boolean } | null> {
   if (edited?.subjectChanged) {
     const renamed = await patchMessage(ctx, draftId, { subject: edited.subject });
     if (!renamed.ok) {
-      return `its subject could not be changed: ${failureText(renamed.failure, account)} ${left}`;
+      const why = `its subject could not be changed: ${failureText(renamed.failure, account)} ${left}`;
+      return { why, renamed: false };
     }
   }
   for (const file of files) {
     const added = await addAttachment(ctx, draftId, file);
     if (!added.ok) {
-      return `${file.name} could not be attached: ${failureText(added.failure, account)} ${left}`;
+      const why = `${file.name} could not be attached: ${failureText(added.failure, account)} ${left}`;
+      return { why, renamed: true };
     }
   }
   return null;
+}
+
+/** The choice as it stands when the reader's subject did not reach the draft: only their text is left of the edit. */
+function unrenamed(choice: MailChoice, subject: string, body: string): MailChoice {
+  const { edited, ...rest } = choice;
+  if (edited === undefined || edited.text === body) return rest;
+  const text = { subject, text: edited.text, subjectChanged: false };
+  return { ...rest, edited: text };
 }
 
 /**
@@ -358,9 +372,13 @@ export async function writeAnswer(
   if (sending && !sameSet(actual, shown)) {
     return `Not sent: Outlook addressed it to ${actual.join(", ")}, not to the ${shown.join(", ")} you confirmed. ${left}`;
   }
-  const why = await finishDraft(opened, draft.value.id, answer.files, choice.edited, left);
-  if (why !== null)
-    return sending ? `Not sent: ${why}` : told(choice, `Saved in Drafts, but ${why}`);
+  const failed = await finishDraft(opened, draft.value.id, answer.files, choice.edited, left);
+  if (failed !== null) {
+    if (sending) return `Not sent: ${failed.why}`;
+    // The draft keeps Outlook's subject when the PATCH failed: do not report the reader's.
+    const kept = failed.renamed ? choice : unrenamed(choice, created.value.subject, answer.body);
+    return told(kept, `Saved in Drafts, but ${failed.why}`);
+  }
   if (!sending) return savedAnswer(draft.value, actual, shown, choice);
   const sent = await sendDraft(ctx, draft.value.id);
   if (!sent.ok) return `Not sent: ${failureText(sent.failure, account)} ${left}`;

@@ -125,7 +125,7 @@ test("outlook_reply: a reader who removed the quoted-mail line gets their text a
   expect(answer).toEndWith("Its text now:\nJust this");
 });
 
-test("outlook_forward: the edited subject is patched into the forward draft, files still added", async () => {
+test("outlook_forward: the edited subject is patched into the forward draft", async () => {
   const w = world({ edit: edits("draft", { subject: "FW: For Dana" }) });
   const answer = await w.fake.callTool("outlook_forward", {
     id: "m1",
@@ -331,4 +331,36 @@ test("confirm-edit is not used where a two-way card exists", async () => {
   const answer = await w.fake.callTool("outlook_send", SEND);
   expect(answer).toStartWith("The reader saved it in Drafts: ");
   expect(w.fake.confirms).toEqual([]);
+});
+
+/** A world where the draft Outlook makes is gone afterwards, so a PATCH to it fails as Graph's 404 would. */
+function worldWithoutDraft(options: Parameters<typeof setup>[0]) {
+  const w = world(options);
+  const push = w.graph.messages.push.bind(w.graph.messages);
+  w.graph.messages.push = (...items) => push(...items.filter((each) => each["id"] !== "draft1"));
+  return w;
+}
+
+test("outlook_reply saved: when the subject PATCH fails, the answer does not claim the edited subject", async () => {
+  const w = worldWithoutDraft({
+    edit: edits("draft", {
+      subject: "RE: Mine",
+      text: (shown) => shown.replace("Thanks", "Many thanks"),
+    }),
+  });
+  const answer = await w.fake.callTool("outlook_reply", { id: "m1", body: "Thanks" });
+  expect(answer).toContain("Saved in Drafts, but its subject could not be changed");
+  expect(answer).not.toContain("RE: Mine");
+  expect(answer).toContain(
+    'Its subject now: "RE: Contract for review". Its text now:\nMany thanks',
+  );
+  expect(w.graph.sent).toEqual([]);
+});
+
+test("outlook_reply saved: a failed subject PATCH with the text unchanged reports no edit", async () => {
+  const w = worldWithoutDraft({ edit: edits("draft", { subject: "RE: Mine" }) });
+  const answer = await w.fake.callTool("outlook_reply", { id: "m1", body: "Thanks" });
+  expect(answer).toContain("Saved in Drafts, but its subject could not be changed");
+  expect(answer).not.toContain("RE: Mine");
+  expect(answer).not.toContain("The reader edited");
 });
