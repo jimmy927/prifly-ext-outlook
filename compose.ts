@@ -38,6 +38,7 @@ import {
   message,
   type NewMail,
   type OutgoingFile,
+  patchMessage,
   type ReplyKind,
   saveMail,
   sendDraft,
@@ -191,7 +192,9 @@ async function sendNew(api: ExtensionApi, args: Record<string, unknown>, deps: T
     },
   );
   if (typeof choice === "string") return choice;
-  return writeNew(opened, { to, cc, bcc, subject, body, files }, choice);
+  // What the reader edited on the card is what is saved or sent.
+  const final = { subject: choice.edited?.subject ?? subject, body: choice.edited?.text ?? body };
+  return writeNew(opened, { to, cc, bcc, ...final, files }, choice);
 }
 
 const notMe = (account: string) => (person: Person) =>
@@ -281,6 +284,7 @@ const quotedNote = (original: Mail) =>
 /** The two-way card for an answer: a neutral title, the mail, and the calls either way makes. */
 export function answerCard(answer: Answer, account: string): MailCard {
   const { kind, original, people, files } = answer;
+  const note = quotedNote(original);
   return {
     title: kind === "forward" ? "Forward an email" : "Reply",
     summary: choiceSummary(
@@ -292,9 +296,10 @@ export function answerCard(answer: Answer, account: string): MailCard {
     mail: {
       ...cardPeople(people.to.map(personLabel), people.cc.map(personLabel), []),
       subject: answer.subject,
-      text: `${answer.body}\n\n${quotedNote(original)}`,
+      text: `${answer.body}\n\n${note}`,
       attachments: cardFiles(files),
     },
+    note,
   };
 }
 
@@ -304,6 +309,29 @@ function savedAnswer(draft: Mail, actual: string[], shown: string[], choice: Mai
     ? ""
     : ` Outlook addressed it to ${actual.join(", ")}, not to the ${shown.join(", ")} on the card: check it before it is sent.`;
   return told(choice, `${inDrafts(draft, actual)}${differs}`);
+}
+
+/** Puts the reader's edited subject on a draft and adds the files; why one failed, or null. */
+async function finishDraft(
+  { ctx, account }: Opened,
+  draftId: string,
+  files: OutgoingFile[],
+  edited: MailChoice["edited"],
+  left: string,
+): Promise<string | null> {
+  if (edited?.subjectChanged) {
+    const renamed = await patchMessage(ctx, draftId, { subject: edited.subject });
+    if (!renamed.ok) {
+      return `its subject could not be changed: ${failureText(renamed.failure, account)} ${left}`;
+    }
+  }
+  for (const file of files) {
+    const added = await addAttachment(ctx, draftId, file);
+    if (!added.ok) {
+      return `${file.name} could not be attached: ${failureText(added.failure, account)} ${left}`;
+    }
+  }
+  return null;
 }
 
 /**
@@ -316,22 +344,23 @@ export async function writeAnswer(
   choice: MailChoice,
 ): Promise<string> {
   const { ctx, account } = opened;
-  const { original, kind, body, forwardTo, shown } = answer;
-  const draft = await createDraft(ctx, original.id, kind, body, forwardTo);
-  if (!draft.ok) return failureText(draft.failure, account);
+  const { original, kind, forwardTo, shown } = answer;
+  // What the reader edited on the card is what the draft says.
+  const body = choice.edited?.text ?? answer.body;
+  const created = await createDraft(ctx, original.id, kind, body, forwardTo);
+  if (!created.ok) return failureText(created.failure, account);
+  // The subject Outlook gave the draft, or the reader's, which is patched in below.
+  const subject = choice.edited?.subjectChanged ? choice.edited.subject : created.value.subject;
+  const draft = { ...created, value: { ...created.value, subject } };
   const left = `The draft is in Drafts (id ${draft.value.id}) to check and send from Outlook.`;
   const actual = addresses([...draft.value.to, ...draft.value.cc]);
   const sending = choice.kind === "send";
   if (sending && !sameSet(actual, shown)) {
     return `Not sent: Outlook addressed it to ${actual.join(", ")}, not to the ${shown.join(", ")} you confirmed. ${left}`;
   }
-  for (const file of answer.files) {
-    const added = await addAttachment(ctx, draft.value.id, file);
-    if (!added.ok) {
-      const why = `${file.name} could not be attached: ${failureText(added.failure, account)} ${left}`;
-      return sending ? `Not sent: ${why}` : told(choice, `Saved in Drafts, but ${why}`);
-    }
-  }
+  const why = await finishDraft(opened, draft.value.id, answer.files, choice.edited, left);
+  if (why !== null)
+    return sending ? `Not sent: ${why}` : told(choice, `Saved in Drafts, but ${why}`);
   if (!sending) return savedAnswer(draft.value, actual, shown, choice);
   const sent = await sendDraft(ctx, draft.value.id);
   if (!sent.ok) return `Not sent: ${failureText(sent.failure, account)} ${left}`;
@@ -427,7 +456,7 @@ function replySpec(name: string, kind: ReplyKind, description: string): ToolSpec
 
 /** What every mail tool's description ends with: who decides, and that there is no other way. */
 export const READER_DECIDES =
-  "The reader sees the mail (recipients, subject, text, files) on a card and chooses there to save it in Drafts or send it now, whatever this tool is called; the answer says which they chose (an older prifly's card only confirms what the tool's name says). Never try another way to send mail.";
+  "The reader sees the mail (recipients, subject, text, files) on a card and chooses there to save it in Drafts or send it now, whatever this tool is called; the answer says which they chose, and when they edited the subject or text first, the final subject and text that went out (an older prifly's card only confirms what the tool's name says). Never try another way to send mail.";
 
 export const composeTools: ToolSpec[] = [
   {

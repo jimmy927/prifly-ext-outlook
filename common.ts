@@ -139,26 +139,132 @@ export type CardMail = {
 /** What becomes of a mail: saved in Drafts, or sent. */
 export type MailKind = "draft" | "send";
 
-/** What a mail tool does, and whether the reader chose it on the two-way card (else the tool's name said it). */
-export type MailChoice = { kind: MailKind; chosen: boolean };
+/** What the reader changed on an editable card: the subject and text as they now stand. */
+export type MailEdit = { subject: string; text: string; subjectChanged: boolean };
 
-/** The two-way card's own title, summary, details and mail. */
-export type MailCard = { title: string; summary: string; details: string; mail: CardMail };
+/**
+ * What a mail tool does, whether the reader chose it on the two-way card
+ * (else the tool's name said it), and what they edited there, if anything.
+ */
+export type MailChoice = { kind: MailKind; chosen: boolean; edited?: MailEdit };
+
+/**
+ * The two-way card's own title, summary, details and mail. `note` is a last
+ * paragraph of `mail.text` that is not the reader's text (a reply's line about
+ * the quoted mail): taken off again from what they edit.
+ */
+export type MailCard = {
+  title: string;
+  summary: string;
+  details: string;
+  mail: CardMail;
+  note?: string;
+};
 
 /** prifly's two-way mail card (extension API v0.10.0), not in the v0.7.0 types. */
 type ChooseMail = (spec: ConfirmSpec & { mail: CardMail }) => Promise<MailKind | null>;
 
-/** Whether prifly draws the two-way mail card, where the reader picks draft or send. */
+/** The two-way card with subject and text editable ("choose-mail-edit"): the choice and the mail as it now stands. */
+type ChooseMailEdit = (
+  spec: ConfirmSpec & { mail: CardMail },
+) => Promise<{ choice: MailKind; subject: string; text: string } | null>;
+
+/** The confirm card with `content` editable ("confirm-edit"): the edited text, null for Cancel. */
+type ConfirmEdit = (spec: ConfirmSpec & { content: string }) => Promise<string | null>;
+
+/** Whether prifly draws the two-way card with the subject and text editable. */
+export function canChooseMailEdit(api: ExtensionApi): boolean {
+  const choose = (api as ExtensionApi & { chooseMailEdit?: ChooseMailEdit }).chooseMailEdit;
+  return api.features?.includes("choose-mail-edit") === true && typeof choose === "function";
+}
+
+/** Whether prifly draws a two-way mail card (editable or not), where the reader picks draft or send. */
 export function canChooseMail(api: ExtensionApi): boolean {
   const choose = (api as ExtensionApi & { chooseMail?: ChooseMail }).chooseMail;
-  return api.features?.includes("choose-mail") === true && typeof choose === "function";
+  return (
+    canChooseMailEdit(api) ||
+    (api.features?.includes("choose-mail") === true && typeof choose === "function")
+  );
+}
+
+/** Whether prifly's confirm card lets the reader edit its content. */
+function canConfirmEdit(api: ExtensionApi): boolean {
+  const confirm = (api as ExtensionApi & { confirmEdit?: ConfirmEdit }).confirmEdit;
+  return api.features?.includes("confirm-edit") === true && typeof confirm === "function";
+}
+
+/** `text` without the card's trailing `note`, if it still ends with it. */
+function withoutNote(text: string, note: string | undefined): string {
+  return note !== undefined && text.endsWith(`\n\n${note}`)
+    ? text.slice(0, text.length - note.length - 2)
+    : text;
+}
+
+/** What the reader changed, if anything: the edited subject and text against the card's. */
+function editOf(card: MailCard, subject: string, text: string): { edited?: MailEdit } {
+  const body = withoutNote(text, card.note);
+  const subjectChanged = subject !== card.mail.subject;
+  if (!subjectChanged && body === withoutNote(card.mail.text, card.note)) return {};
+  return { edited: { subject, text: body, subjectChanged } };
+}
+
+/** The mail's header lines, for a confirm card whose content is only the text. */
+function headLines(card: MailCard): string[] {
+  const { mail } = card;
+  const files = mail.attachments ?? [];
+  return [
+    `To: ${mail.to}`,
+    ...(mail.cc === undefined ? [] : [`Cc: ${mail.cc}`]),
+    ...(mail.bcc === undefined ? [] : [`Bcc: ${mail.bcc}`]),
+    `Subject: ${mail.subject}`,
+    ...(files.length === 0 ? [] : [`Attachments: ${files.map((f) => f.filename).join(", ")}`]),
+    ...(card.note === undefined ? [] : [card.note]),
+  ];
+}
+
+/**
+ * Shows a confirm card for a write whose text the reader may edit: where
+ * prifly has "confirm-edit" it holds `body` as editable content (with `head`
+ * under the summary), else it is `spec` as is. Answers the text to write
+ * (`body` unless edited), or the text the tool answers instead of writing.
+ */
+export async function askBody(
+  api: ExtensionApi,
+  spec: ConfirmSpec,
+  body: string,
+  head: string[] = [],
+): Promise<{ text: string } | string> {
+  if (canConfirmEdit(api)) {
+    const confirm = (api as ExtensionApi & { confirmEdit: ConfirmEdit }).confirmEdit;
+    const summary = [spec.summary, ...head].join("\n");
+    const text = await confirm.call(api, { ...spec, summary, content: body });
+    return typeof text === "string" ? { text } : CANCELLED;
+  }
+  return (await ask(api, spec)) ?? { text: body };
+}
+
+/** Shows the editable two-way card: the reader's choice and what they edited, or a Cancel. */
+async function chooseEdited(
+  api: ExtensionApi,
+  card: MailCard,
+  shown: ConfirmSpec & { mail: CardMail },
+): Promise<MailChoice | string> {
+  const choose = (api as ExtensionApi & { chooseMailEdit: ChooseMailEdit }).chooseMailEdit;
+  const answer = await choose.call(api, shown);
+  // Anything but the reader's own "draft" or "send" is a Cancel.
+  if (answer === null || typeof answer !== "object") return CANCELLED;
+  if (answer.choice !== "draft" && answer.choice !== "send") return CANCELLED;
+  if (typeof answer.subject !== "string" || typeof answer.text !== "string") return CANCELLED;
+  return { kind: answer.choice, chosen: true, ...editOf(card, answer.subject, answer.text) };
 }
 
 /**
  * Asks the reader about a mail. Where prifly has the two-way card
- * ("choose-mail"), it shows `card` and the reader picks Save as draft or Send
- * now, whatever the tool is called; only their Send sends. An older prifly
- * shows `spec` on a confirm card, and confirming does `kind`, what the tool's
+ * ("choose-mail-edit", else "choose-mail"), it shows `card` and the reader
+ * picks Save as draft or Send now, whatever the tool is called; only their
+ * Send sends, and with "choose-mail-edit" they may have edited the subject and
+ * text first. An older prifly shows `spec` on a confirm card (its text
+ * editable with "confirm-edit"), and confirming does `kind`, what the tool's
  * name says. Answers the choice, or the text the tool answers instead of
  * writing.
  */
@@ -168,20 +274,37 @@ export async function askMail(
   kind: MailKind,
   card: MailCard,
 ): Promise<MailChoice | string> {
+  const { title, summary, details, mail } = card;
+  const shown = { title, summary, details, mail: { ...mail, draft: false } };
+  if (canChooseMailEdit(api)) return chooseEdited(api, card, shown);
   if (canChooseMail(api)) {
     const choose = (api as ExtensionApi & { chooseMail: ChooseMail }).chooseMail;
-    const chosen = await choose.call(api, { ...card, mail: { ...card.mail, draft: false } });
-    // Anything but the reader's own "draft" or "send" is a Cancel.
+    const chosen = await choose.call(api, shown);
     if (chosen === "draft" || chosen === "send") return { kind: chosen, chosen: true };
     return CANCELLED;
   }
-  return (await ask(api, spec)) ?? { kind, chosen: false };
+  const was = withoutNote(mail.text, card.note);
+  const done = await askBody(api, spec, was, headLines(card));
+  if (typeof done === "string") return done;
+  if (done.text === was) return { kind, chosen: false };
+  return {
+    kind,
+    chosen: false,
+    edited: { subject: mail.subject, text: done.text, subjectChanged: false },
+  };
 }
 
-/** The answer as is when the tool's name said what to do; else led by what the reader chose. */
+/** What the session is told when the reader edited the mail: what it now says, since that is what went out. */
+function editNote(edited: MailEdit): string {
+  return `The reader edited the mail first. Its subject now: "${edited.subject}". Its text now:\n${edited.text}`;
+}
+
+/** The answer as is when the tool's name said what to do; else led by what the reader chose. Followed by what they edited. */
 export function told(choice: MailChoice, answer: string): string {
-  if (!choice.chosen) return answer;
-  return `${choice.kind === "draft" ? "The reader saved it in Drafts" : "The reader sent it"}: ${answer}`;
+  const said = choice.chosen
+    ? `${choice.kind === "draft" ? "The reader saved it in Drafts" : "The reader sent it"}: ${answer}`
+    : answer;
+  return choice.edited === undefined ? said : `${said}\n${editNote(choice.edited)}`;
 }
 
 /** A person as the reader knows them: the name, in plain Unicode, else the address. */

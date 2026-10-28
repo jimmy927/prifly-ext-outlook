@@ -501,11 +501,13 @@ export async function patchMessage(
   return answer.ok ? good(toMail(answer.value)) : answer;
 }
 
-/** Replaces a draft's body with plain `body`. */
+/** Replaces a draft's body with plain `body`, and its subject when one is given. */
 export function updateDraft(
   ctx: GraphContext,
   draftId: string,
   body: string,
+  subject?: string,
 ): Promise<GraphResult<Mail>> {
-  return patchMessage(ctx, draftId, { body: { contentType: "text", content: body } });
+  const text = { body: { contentType: "text", content: body } };
+  return patchMessage(ctx, draftId, subject === undefined ? text : { subject, ...text });
 }

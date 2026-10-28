@@ -54,7 +54,13 @@ draft or Send now, whatever the tool is called. The tool's answer says which
 nothing. Saved, a new mail is `POST /me/messages` and an answer is the
 `createReply` / `createReplyAll` / `createForward` draft with its files, never
 sent; a `replace_draft_id` draft that the reader sends is updated, then sent
-itself. On an older prifly each tool's confirm card does what its name says.
+itself. Where prifly has "choose-mail-edit" (`api.chooseMailEdit`, preferred
+over "choose-mail") the reader may also edit the subject and plain text on the
+card; what they leave is what is saved or sent (a reply's draft gets the text as
+its comment and the subject patched in), and the answer then ends with the final
+subject and text. Where there is no two-way card but "confirm-edit"
+(`api.confirmEdit`) the confirm card's content is the editable text. On an
+older prifly each tool's confirm card does what its name says.
 
 `outlook_api` refuses, with no card and no request, every path whose last
 segment is `sendMail`, `send`, `reply`, `replyAll` or `forward` (any case and

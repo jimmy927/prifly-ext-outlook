@@ -14,7 +14,7 @@ import { failureText } from "./auth";
 import { changeTools } from "./changes";
 import {
   ACCOUNT_PROPERTY,
-  ask,
+  askBody,
   askMail,
   type CardMail,
   canChooseMail,
@@ -185,14 +185,21 @@ async function replaceDraft(
     rewriteCard(current.value, body, await draftFiles(api, opened, current.value)),
   );
   if (typeof choice === "string") return choice;
-  const updated = await updateDraft(opened.ctx, draftId, body);
+  // What the reader edited on the card is what the draft says; the subject is only touched when they changed it.
+  const { edited } = choice;
+  const updated = await updateDraft(
+    opened.ctx,
+    draftId,
+    edited?.text ?? body,
+    edited?.subjectChanged ? edited.subject : undefined,
+  );
   if (!updated.ok) return failureText(updated.failure, opened.account);
   const draft = updated.value;
   const everyone = addresses([...draft.to, ...draft.cc, ...draft.bcc]);
   if (choice.kind === "draft") {
     return choice.chosen
       ? told(choice, inDrafts(draft, everyone))
-      : draftSaved("Draft updated", draft);
+      : told(choice, draftSaved("Draft updated", draft));
   }
   const sent = await sendDraft(opened.ctx, draftId);
   if (!sent.ok) {
@@ -226,16 +233,25 @@ async function draftText(api: ExtensionApi, args: Record<string, unknown>, deps:
   if (!original.ok) return failureText(original.failure, opened.account);
   const all = args["all"] === true;
   if (canChooseMail(api)) return chosenReply(api, opened, original.value, all, body);
-  const refused = await ask(api, {
-    title: "Save a reply draft",
-    summary: `Save a ${all ? "reply-all" : "reply"} to ${quoted(original.value.subject)} in Drafts, not sent.`,
-    content: `In reply to: ${personLabel(original.value.from)}, ${quoted(original.value.subject)}\n\n${body}`,
-    details: `POST /me/messages/${id}/${all ? "createReplyAll" : "createReply"}`,
-  });
-  if (refused !== null) return refused;
-  const created = await createDraft(opened.ctx, id, all ? "replyAll" : "reply", body);
+  const inReplyTo = `In reply to: ${personLabel(original.value.from)}, ${quoted(original.value.subject)}`;
+  const asked = await askBody(
+    api,
+    {
+      title: "Save a reply draft",
+      summary: `Save a ${all ? "reply-all" : "reply"} to ${quoted(original.value.subject)} in Drafts, not sent.`,
+      content: `${inReplyTo}\n\n${body}`,
+      details: `POST /me/messages/${id}/${all ? "createReplyAll" : "createReply"}`,
+    },
+    body,
+    [inReplyTo],
+  );
+  if (typeof asked === "string") return asked;
+  const created = await createDraft(opened.ctx, id, all ? "replyAll" : "reply", asked.text);
   if (!created.ok) return failureText(created.failure, opened.account);
-  return draftSaved("Reply draft saved", created.value);
+  const saved = draftSaved("Reply draft saved", created.value);
+  if (asked.text === body) return saved;
+  const edited = { subject: created.value.subject, text: asked.text, subjectChanged: false };
+  return told({ kind: "draft", chosen: false, edited }, saved);
 }
 
 /**
