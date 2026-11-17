@@ -7,6 +7,10 @@ mail or calendar call. Every write shows the reader a card with exactly what
 will happen, and runs only when they confirm. A mail is only proposed: the
 reader chooses on its card to save it in Drafts or send it.
 
+![The card prifly shows for a reply: the mail as it will go out, with Save as draft and Send now](docs/screenshot.png)
+
+The card for a reply the session proposed. The mail is shown as it will go out, and the reader chooses to save it in Drafts or send it. The people and text are invented.
+
 There is no board, chip or launcher: the reader asks a session in plain words
 ("what are my latest mails?", "reply to Bob that the contract is signed") and
 the session answers through the tools.
