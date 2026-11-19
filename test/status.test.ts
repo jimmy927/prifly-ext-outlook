@@ -54,7 +54,7 @@ test("without a connection, or with an ended grant, it says it is not connected"
   const none = boot([]);
   await none.extension.refreshStatus();
   expect(none.fake.statuses).toEqual([
-    "Not connected: No Microsoft account is connected: connect one in prifly's Vault → Connections.",
+    "Not connected: No Microsoft account is connected: run outlook_sign_in to connect one (or add it in prifly's Vault → Connections).",
   ]);
 
   const revoked = boot();
@@ -62,7 +62,7 @@ test("without a connection, or with an ended grant, it says it is not connected"
   revoked.connections.endpoint.revoke("ms-1");
   await revoked.extension.refreshStatus();
   expect(revoked.fake.statuses.at(-1)).toBe(
-    "Not connected: The Outlook grant for ada@example.com ended: sign in again in Vault → Connections.",
+    "Not connected: The Outlook grant for ada@example.com ended: run outlook_sign_in to sign in again (or in Vault → Connections).",
   );
 });
 

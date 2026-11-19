@@ -40,7 +40,7 @@ export type Access =
   | { ok: false; problem: Problem };
 
 export const NO_CONNECTION_TEXT =
-  "No Microsoft account is connected: connect one in prifly's Vault → Connections.";
+  "No Microsoft account is connected: run outlook_sign_in to connect one (or add it in prifly's Vault → Connections).";
 
 /** Microsoft's codes for "the user may not consent here": needs an admin (65001, 90094, 90095). */
 const ADMIN_CONSENT = /AADSTS(65001|90094|90095)/;
@@ -72,7 +72,7 @@ export function adminConsentText(
 }
 
 export function needsSignInText(account: string): string {
-  return `The Outlook grant for ${account} ended: sign in again in Vault → Connections.`;
+  return `The Outlook grant for ${account} ended: run outlook_sign_in to sign in again (or in Vault → Connections).`;
 }
 
 /** The scope's bare name: Graph may list it as `https://graph.microsoft.com/Mail.Read`. */

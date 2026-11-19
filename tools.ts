@@ -56,6 +56,7 @@ import {
 } from "./graph";
 import { addresses, type Mail, oldestFirst, type Person, personLabel } from "./model";
 import { attachmentDir, saveAttachments } from "./save-attachments";
+import { signInTool } from "./sign-in";
 
 export type { ToolDeps } from "./common";
 
@@ -370,7 +371,7 @@ export function outlookTools(
   getApi: () => ExtensionApi | null,
   deps: ToolDeps = {},
 ): ExtensionTool[] {
-  const specs = [...readTools, ...composeTools, ...changeTools, ...apiTools, docsTool];
+  const specs = [...readTools, ...composeTools, ...changeTools, ...apiTools, docsTool, signInTool];
   return specs.map((spec) => ({
     name: spec.name,
     description: spec.description,

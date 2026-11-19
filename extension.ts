@@ -28,7 +28,10 @@ export function makeExtension(deps: ExtensionDeps = {}): Extension {
       let api: typeof given | null = given;
       const { every, ...toolDeps } = deps;
       // Absent on an older prifly: optional, like every part added after the first version.
-      given.tools?.register(outlookTools(() => api, toolDeps));
+      // After outlook_sign_in the status line shows the new account at once.
+      given.tools?.register(
+        outlookTools(() => api, { ...toolDeps, onSignedIn: () => void refresh() }),
+      );
       const status = startStatus(given, {
         ...(every === undefined ? {} : { every }),
         ...(deps.wait === undefined ? {} : { wait: deps.wait }),

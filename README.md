@@ -29,6 +29,7 @@ Reads run at once:
 | `outlook_read(id, conversation?)` | One message, or its whole conversation oldest first. Attachments are saved to disk and their paths listed. |
 | `outlook_folders()` | The mail folders, three levels deep: `path \| unread \| total \| id`. |
 | `outlook_api_docs(topic)` | The Microsoft Graph v1.0 reference for an endpoint, read from Microsoft Learn: permissions, HTTP request, query parameters, request body, response and the first example request. |
+| `outlook_sign_in(account?)` | Opens the reader's browser to sign in to Microsoft with the manifest's scopes: on the account in use (an ended grant, or scopes it lacks), else a new one; `account: "new"` always adds another. The tools say to run it when no account is connected or a grant ended. |
 
 Writes confirm first:
 
@@ -131,8 +132,8 @@ says so instead (`Not connected: …`).
 
 The extension talks to `https://graph.microsoft.com` only through
 `api.connections.fetch`: prifly holds the token, and the extension never sees
-one. It uses a Microsoft account connected in prifly's Vault → Connections,
-with one connection asking for:
+one. It uses a Microsoft account connected with `outlook_sign_in` (or in
+prifly's Vault → Connections), with one connection asking for:
 
 - `Mail.ReadWrite`: reading mail, drafts, moving, flags, categories, read state;
 - `Mail.Send`: sending a mail the reader chose to send;
@@ -161,6 +162,7 @@ by Microsoft's message.
 | `docs.ts` | `outlook_api_docs`: topic to page, the Learn page as text |
 | `common.ts` | Arguments, opening the connection, the confirm card (`ask`), the two-way mail card (`askMail`) |
 | `status.ts` | The status line |
+| `sign-in.ts` | `outlook_sign_in`: signs in a new account, or again for the one in use, with the manifest's scopes |
 | `auth.ts` | Picks the connection, asks for missing scopes (`resolveAccess`) or only looks (`peekAccess`), turns every access state into text |
 | `graph.ts`, `model.ts` | The Graph client over `api.connections.fetch`; mail and attachment records |
 | `save-attachments.ts` | Saves attachments to disk and says where |

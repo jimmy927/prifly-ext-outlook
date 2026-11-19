@@ -21,6 +21,8 @@ export type ToolDeps = {
   wait?: Wait;
   /** Fetches Microsoft Learn's pages for `outlook_api_docs`; tests give a fake. */
   fetchDocs?: (url: string) => Promise<Response>;
+  /** Called after `outlook_sign_in`, to set the status line again. */
+  onSignedIn?: () => void;
 };
 
 /** One tool, before `tools.ts` wraps it with the api and the guard. */

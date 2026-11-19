@@ -69,6 +69,7 @@ test("activate registers the read, write, generic and docs tools", async () => {
     "outlook_mark_read",
     "outlook_api",
     "outlook_api_docs",
+    "outlook_sign_in",
   ]);
   expect(fake.ui).toEqual([]);
 });
@@ -254,7 +255,7 @@ test("a needsSignIn answer with an admin consent link puts the link in the answe
 test("no connection, an unknown account and a missing host api are all plain text", async () => {
   const none = setup([]);
   expect(await none.fake.callTool("outlook_search", {})).toContain("Connect");
-  expect(await none.fake.callTool("outlook_search", {})).toContain("Vault → Connections");
+  expect(await none.fake.callTool("outlook_search", {})).toContain("run outlook_sign_in");
 
   const { fake } = setup();
   expect(await fake.callTool("outlook_search", { account: "nobody@example.com" })).toBe(
@@ -285,7 +286,7 @@ test("a revoked grant comes back as the needs-sign-in text, not a throw", async 
   connections.endpoint.revoke("ms-1");
   const answer = await fake.callTool("outlook_search", {});
   expect(answer).toBe(
-    "The Outlook grant for ada@example.com ended: sign in again in Vault → Connections.",
+    "The Outlook grant for ada@example.com ended: run outlook_sign_in to sign in again (or in Vault → Connections).",
   );
 });
 
@@ -293,7 +294,7 @@ test("a 401 claims challenge that reaches the extension is the same needs-sign-i
   const { fake, graph } = setup();
   graph.fault = { kind: "claims" };
   expect(await fake.callTool("outlook_search", {})).toBe(
-    "The Outlook grant for ada@example.com ended: sign in again in Vault → Connections.",
+    "The Outlook grant for ada@example.com ended: run outlook_sign_in to sign in again (or in Vault → Connections).",
   );
 });
 
